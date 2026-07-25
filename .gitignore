@@ -1,0 +1,26 @@
+node_modules/
+dist/
+dist-app/
+dist-electron/
+build/
+*.log
+.DS_Store
+
+# ===== 密钥 / 本地配置 拦截规则 =====
+# 绝不提交真实 API Key / Base URL / 环境变量
+.env
+.env.local
+.env.*.local
+*.local
+config.local.*
+*.local.js
+*.local.json
+
+# 运行时生成的错误日志与本地数据
+ERROR_LOG.md
+data/
+*.db
+*.sqlite
+
+# 保留示例模板（不含真实凭据）
+!.env.example
