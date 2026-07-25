@@ -9,7 +9,8 @@ build/
 # ===== 密钥 / 本地配置 拦截规则 =====
 # 绝不提交真实 API Key / Base URL / 环境变量
 .env
-.env.*
+.env.local
+.env.*.local
 *.local
 config.local.*
 *.local.js
@@ -20,3 +21,6 @@ ERROR_LOG.md
 data/
 *.db
 *.sqlite
+
+# 保留示例模板（不含真实凭据）
+!.env.example
