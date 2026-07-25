@@ -1,0 +1,85 @@
+{
+  "name": "apikey-test-tool",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "大模型API Key测试工具",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && electron-builder",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron . --dev\"",
+    "pack": "vite build && electron-builder",
+    "lint": "eslint \"src/**\" \"electron/**\"",
+    "lint:fix": "eslint \"src/**\" \"electron/**\" --fix",
+    "format": "prettier --write \"src/**/*.{vue,js,css}\" \"electron/**/*.cjs\"",
+    "format:check": "prettier --check \"src/**/*.{vue,js,css}\" \"electron/**/*.cjs\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{vue,js,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.css": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "chart.js": "^4.5.1",
+    "pinia": "^3.0.4",
+    "vue": "^3.4.15",
+    "vue-chartjs": "^5.3.3",
+    "vue-grid-layout": "^3.0.0-beta1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-vue": "^5.0.3",
+    "@vue/test-utils": "^2.4.11",
+    "autoprefixer": "^10.4.17",
+    "concurrently": "^8.2.2",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.9.2",
+    "globals": "^17.6.0",
+    "happy-dom": "^20.10.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
+    "postcss": "^8.4.33",
+    "prettier": "^3.8.4",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.0.12",
+    "vitest": "^4.1.8",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.apikeytester.app",
+    "productName": "APIKey测试工具",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "ico/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "ico/icon-256x256.png"
+    },
+    "icon": "ico/icon-256x256.png"
+  }
+}
