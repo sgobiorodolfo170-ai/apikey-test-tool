@@ -24,3 +24,10 @@ data/
 
 # 保留示例模板（不含真实凭据）
 !.env.example
+
+# 构建临时目录（electron-builder 换输出目录时产生）
+dist-app-new/
+dist-app-build*/
+
+# 本地工作区数据（代理记忆 / 缓存），不属于项目代码
+.workbuddy-ai/

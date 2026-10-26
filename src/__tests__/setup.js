@@ -4,7 +4,14 @@ import { createPinia } from 'pinia'
 const mockStore = {
   providers: {},
   history: [],
+  channels: [],
   userDataPath: '/mock/user/data',
+}
+
+function fileKey(fileName) {
+  if (fileName === 'providers.json') return 'providers'
+  if (fileName === 'channels.json') return 'channels'
+  return 'history'
 }
 
 let activePinia = null
@@ -21,24 +28,18 @@ export function getActivePinia() {
 export function resetMockStore() {
   mockStore.providers = {}
   mockStore.history = []
+  mockStore.channels = []
 }
 
 export function setupElectronAPIMock() {
   window.electronAPI = {
     getUserDataPath: vi.fn().mockResolvedValue(mockStore.userDataPath),
     readFile: vi.fn().mockImplementation(async (filePath) => {
-      const fileName = filePath.split('/').pop()
-      const data = fileName === 'providers.json' ? mockStore.providers : mockStore.history
+      const data = mockStore[fileKey(filePath.split('/').pop())]
       return { success: true, data: JSON.stringify(data) }
     }),
     writeFile: vi.fn().mockImplementation(async (filePath, data) => {
-      const fileName = filePath.split('/').pop()
-      const parsed = JSON.parse(data)
-      if (fileName === 'providers.json') {
-        mockStore.providers = parsed
-      } else {
-        mockStore.history = parsed
-      }
+      mockStore[fileKey(filePath.split('/').pop())] = JSON.parse(data)
       return { success: true }
     }),
     logError: vi.fn().mockResolvedValue({ success: true }),

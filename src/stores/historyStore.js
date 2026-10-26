@@ -25,10 +25,26 @@ export const useHistoryStore = defineStore('history', {
       }
     },
     async deleteRecord(id) {
-      this.records = await deleteTestRecord(id)
+      const toastStore = useToastStore()
+      try {
+        this.records = await deleteTestRecord(id)
+        return true
+      } catch (error) {
+        console.error('删除记录失败:', error)
+        toastStore.addToast('删除失败: ' + (error.message || '写入文件失败'), 'error')
+        return false
+      }
     },
     async clearAll() {
-      this.records = await clearHistoryStorage()
+      const toastStore = useToastStore()
+      try {
+        this.records = await clearHistoryStorage()
+        return true
+      } catch (error) {
+        console.error('清空历史失败:', error)
+        toastStore.addToast('清空失败: ' + (error.message || '写入文件失败'), 'error')
+        return false
+      }
     },
     refresh() {
       this.loadHistory()
@@ -48,6 +64,17 @@ export const useHistoryStore = defineStore('history', {
 
       testStore.setCurrentConfig(config)
       toastStore.addToast(`配置已加载: ${config.provider || '未知'}`, 'success')
+    },
+    async reloadRecord(record) {
+      if (!record?.config) return
+      const testStore = useTestStore()
+      const toastStore = useToastStore()
+      if (testStore.isTesting) {
+        toastStore.addToast('正在测试中，请稍候', 'warning')
+        return
+      }
+      await this.loadConfig(record)
+      await testStore.testConnection({ ...testStore.currentConfig })
     },
   },
 })

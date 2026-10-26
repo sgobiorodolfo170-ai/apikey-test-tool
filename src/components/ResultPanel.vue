@@ -1,12 +1,20 @@
 <template>
   <div class="card p-6 flex flex-col h-full w-full">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">测试结果</h2>
+    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">
+      测试结果
+    </h2>
 
-    <div v-if="!testStore.currentResult" class="flex-1 flex items-center justify-center text-text-secondary">
+    <div
+      v-if="!testStore.currentResult"
+      class="flex-1 flex items-center justify-center text-text-secondary"
+    >
       暂无测试结果，请先进行测试
     </div>
 
-    <div v-else-if="testStore.isTesting" class="flex-1 flex items-center justify-center text-text-secondary">
+    <div
+      v-else-if="testStore.isTesting"
+      class="flex-1 flex items-center justify-center text-text-secondary"
+    >
       <div
         class="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto mb-4"
       ></div>
@@ -14,7 +22,7 @@
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto space-y-4">
-      <div class="bg-surface-alt rounded-input p-4">
+      <div class="bg-surface-alt rounded-input p-4 space-y-2">
         <div class="flex items-center justify-between">
           <div>
             <span class="text-sm text-text-secondary">连通状态: </span>
@@ -31,8 +39,16 @@
           </div>
           <div>
             <span class="text-sm text-text-secondary">连接耗时: </span>
-            <span class="font-bold text-accent">{{ testStore.currentResult.connectTime || 0 }}ms</span>
+            <span class="font-bold text-accent"
+              >{{ testStore.currentResult.connectTime || 0 }}ms</span
+            >
           </div>
+        </div>
+        <div v-if="testStore.currentResult.testedModel" class="text-sm">
+          <span class="text-text-secondary">指定模型: </span>
+          <span class="font-bold text-text-primary break-all">{{
+            testStore.currentResult.testedModel
+          }}</span>
         </div>
       </div>
 
@@ -94,11 +110,29 @@
         </div>
       </div>
 
-      <div v-if="testStore.currentResult.summary" class="bg-surface-alt rounded-input px-4 py-3 mt-4">
+      <div
+        v-if="testStore.currentResult.summary"
+        class="bg-surface-alt rounded-input px-4 py-3 mt-4"
+      >
         <div class="flex items-center justify-center gap-6 text-sm">
-          <span><span class="text-text-secondary">成功：</span><span class="font-bold text-success">{{ testStore.currentResult.summary.success }}</span></span>
-          <span><span class="text-text-secondary">失败：</span><span class="font-bold text-danger">{{ testStore.currentResult.summary.failed }}</span></span>
-          <span><span class="text-text-secondary">平均延迟：</span><span class="font-bold text-accent">{{ testStore.currentResult.summary.avgLatency }}ms</span></span>
+          <span
+            ><span class="text-text-secondary">成功：</span
+            ><span class="font-bold text-success">{{
+              testStore.currentResult.summary.success
+            }}</span></span
+          >
+          <span
+            ><span class="text-text-secondary">失败：</span
+            ><span class="font-bold text-danger">{{
+              testStore.currentResult.summary.failed
+            }}</span></span
+          >
+          <span
+            ><span class="text-text-secondary">平均延迟：</span
+            ><span class="font-bold text-accent"
+              >{{ testStore.currentResult.summary.avgLatency }}ms</span
+            ></span
+          >
         </div>
       </div>
     </div>

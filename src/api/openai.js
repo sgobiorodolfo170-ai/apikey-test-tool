@@ -1,16 +1,72 @@
-import axios from 'axios'
+import http from './http.js'
 import {
   buildUrl,
   getErrorMessage,
+  extractProviderError,
+  describeListError,
   createController,
   releaseController,
   runConcurrentBatch,
+  acquireSignal,
+  isAbortError,
 } from './utils.js'
+import { createSseParser } from './sse.js'
 
 const TEST_PROMPT = '这是大模型连通性测试'
 const TIMEOUT = 30000
 
 export { cancelAllRequests } from './utils.js'
+
+// 新版 OpenAI 模型已废弃 max_tokens 参数（要求 max_completion_tokens），
+// 收到对应的 400 错误时需要换参数重试
+function needsMaxCompletionTokens(error) {
+  const text = `${extractProviderError(error) || ''} ${error?.message || ''}`.toLowerCase()
+  return text.includes('max_completion_tokens') || text.includes('max_tokens')
+}
+
+async function postChatCompletion(url, apiKey, body, controller, timeout = TIMEOUT) {
+  const requestOptions = {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    timeout,
+    signal: controller.signal,
+  }
+  try {
+    return await http.post(url, body, requestOptions)
+  } catch (error) {
+    if (
+      error.response?.status === 400 &&
+      body.max_tokens !== undefined &&
+      needsMaxCompletionTokens(error)
+    ) {
+      const { max_tokens, ...rest } = body
+      return await http.post(url, { ...rest, max_completion_tokens: max_tokens }, requestOptions)
+    }
+    throw error
+  }
+}
+
+// 兼容各家 OpenAI 兼容实现的模型列表响应格式:
+// {"data": [...]}, 裸数组 [...], {"models": [...]}
+function parseModelsPayload(data) {
+  let list = null
+  if (Array.isArray(data)) {
+    list = data
+  } else if (typeof data === 'object' && data !== null) {
+    if (Array.isArray(data.data)) list = data.data
+    else if (Array.isArray(data.models)) list = data.models
+  }
+  if (!list) return []
+  return list
+    .map((m) =>
+      typeof m === 'string'
+        ? { id: m }
+        : { id: m.id, object: m.object, created: m.created, owned_by: m.owned_by },
+    )
+    .filter((m) => m.id)
+}
 
 export async function testOpenAIConnection(config) {
   const { apiKey, baseUrl } = config
@@ -24,21 +80,15 @@ export async function testOpenAIConnection(config) {
       try {
         const url = buildUrl(baseUrl, endpoint)
 
-        await axios.post(
+        await postChatCompletion(
           url,
+          apiKey,
           {
             model: 'gpt-3.5-turbo',
             messages: [{ role: 'user', content: TEST_PROMPT }],
             max_tokens: 5,
           },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            timeout: TIMEOUT,
-            signal: controller.signal,
-          },
+          controller,
         )
 
         return {
@@ -84,7 +134,7 @@ export async function testOpenAIConnection(config) {
     }
 
     try {
-      await axios.get(buildUrl(baseUrl, '/models'), {
+      await http.get(buildUrl(baseUrl, '/models'), {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -106,7 +156,7 @@ export async function testOpenAIConnection(config) {
       return {
         connected: false,
         connectTime: Date.now() - startTime,
-        error: getErrorMessage(error, baseUrl),
+        error: extractProviderError(error) || getErrorMessage(error, baseUrl),
         status: error.response?.status,
       }
     }
@@ -120,34 +170,14 @@ export async function listOpenAIModels(config) {
   const controller = createController()
 
   try {
-    const listEndpoints = [
-      {
-        path: '/models',
-        parser: (data) =>
-          data.data?.map((m) => ({
-            id: m.id,
-            object: m.object,
-            created: m.created,
-            owned_by: m.owned_by,
-          })),
-      },
-      {
-        path: '/v1/models',
-        parser: (data) =>
-          data.data?.map((m) => ({
-            id: m.id,
-            object: m.object,
-            created: m.created,
-            owned_by: m.owned_by,
-          })),
-      },
-      { path: '/v1/models/list', parser: (data) => data.data?.map((m) => ({ id: m.id })) },
-    ]
+    const listEndpoints = ['/models', '/v1/models', '/v1/models/list']
 
-    for (const endpoint of listEndpoints) {
+    let lastError = null
+
+    for (const path of listEndpoints) {
       try {
-        const url = buildUrl(baseUrl, endpoint.path)
-        const response = await axios.get(url, {
+        const url = buildUrl(baseUrl, path)
+        const response = await http.get(url, {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
@@ -156,20 +186,26 @@ export async function listOpenAIModels(config) {
           signal: controller.signal,
         })
 
-        const models = endpoint.parser(response.data)
+        const models = parseModelsPayload(response.data)
 
-        if (models && models.length > 0) {
+        if (models.length > 0) {
           return { success: true, models }
         }
       } catch (error) {
         if (error.name === 'CanceledError' || error.name === 'AbortError') {
           return { success: false, models: [], error: '请求已取消' }
         }
-        console.log('获取模型列表失败:', endpoint.path, error.response?.status)
+        lastError = describeListError(error)
+        console.log('获取模型列表失败:', path, error.response?.status)
       }
     }
 
-    return { success: false, models: [], error: '无法获取模型列表，请手动输入模型名称测试' }
+    return {
+      success: false,
+      models: [],
+      error: lastError?.message || '无法获取模型列表，请手动输入模型名称测试',
+      status: lastError?.status,
+    }
   } finally {
     releaseController(controller)
   }
@@ -188,21 +224,15 @@ export async function testModelLatency(config, model) {
       try {
         const url = buildUrl(baseUrl, endpoint)
 
-        await axios.post(
+        await postChatCompletion(
           url,
+          apiKey,
           {
             model: modelId,
             messages: [{ role: 'user', content: TEST_PROMPT }],
             max_tokens: 5,
           },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            timeout: TIMEOUT,
-            signal: controller.signal,
-          },
+          controller,
         )
 
         return {
@@ -231,7 +261,7 @@ export async function testModelLatency(config, model) {
           model: modelId,
           latency: -1,
           status: 'failed',
-          error: getErrorMessage(error, baseUrl),
+          error: extractProviderError(error) || getErrorMessage(error, baseUrl),
         }
       }
     }
@@ -247,6 +277,138 @@ export async function testModelLatency(config, model) {
   }
 }
 
+// 聊天补全（OpenAI 兼容协议），供聊天面板使用，与测试逻辑共享参数重试与端点回退
+export async function sendChatCompletion(
+  config,
+  { model, messages, maxTokens = 500, timeout = 60000 },
+) {
+  const { apiKey, baseUrl } = config
+  const controller = createController()
+
+  try {
+    const endpoints = ['/chat/completions', '/v1/chat/completions']
+    let lastError = null
+
+    for (const endpoint of endpoints) {
+      try {
+        const response = await postChatCompletion(
+          buildUrl(baseUrl, endpoint),
+          apiKey,
+          { model, messages, max_tokens: maxTokens },
+          controller,
+          timeout,
+        )
+        return response.data
+      } catch (error) {
+        if (error.name === 'CanceledError' || error.name === 'AbortError') {
+          throw error
+        }
+        lastError = error
+      }
+    }
+
+    throw lastError || new Error('请求失败')
+  } finally {
+    releaseController(controller)
+  }
+}
+
+// 聊天补全（返回助手回复文本），供聊天面板通过统一适配器调用
+export async function sendOpenAIChat(
+  config,
+  { model, messages, maxTokens = 500, timeout = 60000 },
+) {
+  const data = await sendChatCompletion(config, { model, messages, maxTokens, timeout })
+  return data?.choices?.[0]?.message?.content || '无响应'
+}
+
 export async function testAllModelsConcurrently(config, models, concurrency = 5) {
   return runConcurrentBatch(models, (model) => testModelLatency(config, model), concurrency)
+}
+
+// ---------- 流式聊天 ----------
+
+async function streamOpenAIOnce(url, apiKey, body, signal, timeout, onDelta) {
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  }
+
+  const run = async (payload) => {
+    let full = ''
+    const parser = createSseParser(({ data }) => {
+      if (data === '[DONE]') return
+      let json
+      try {
+        json = JSON.parse(data)
+      } catch {
+        return
+      }
+      const delta = json?.choices?.[0]?.delta?.content
+      if (typeof delta === 'string' && delta) {
+        full += delta
+        onDelta?.(delta)
+      }
+    })
+
+    await http.stream(url, { ...payload, stream: true }, { headers, timeout, signal }, (chunk) =>
+      parser.push(chunk),
+    )
+    parser.flush()
+    return full
+  }
+
+  try {
+    return await run(body)
+  } catch (error) {
+    // 新版 OpenAI 模型拒绝 max_tokens：换 max_completion_tokens 重试一次
+    if (
+      error.response?.status === 400 &&
+      body.max_tokens !== undefined &&
+      needsMaxCompletionTokens(error)
+    ) {
+      const { max_tokens, ...rest } = body
+      return await run({ ...rest, max_completion_tokens: max_tokens })
+    }
+    throw error
+  }
+}
+
+export async function streamOpenAIChat(
+  config,
+  { model, messages, maxTokens = 500, timeout = 120000, signal },
+  onDelta,
+) {
+  const { apiKey, baseUrl } = config
+  const { signal: abortSignal, release } = acquireSignal(signal)
+
+  try {
+    const endpoints = ['/chat/completions', '/v1/chat/completions']
+    let lastError = null
+
+    for (const endpoint of endpoints) {
+      try {
+        return await streamOpenAIOnce(
+          buildUrl(baseUrl, endpoint),
+          apiKey,
+          { model, messages, max_tokens: maxTokens },
+          abortSignal,
+          timeout,
+          onDelta,
+        )
+      } catch (error) {
+        if (isAbortError(error)) throw error
+        if (error.response?.status === 404) {
+          lastError = error
+          continue
+        }
+        throw error
+      }
+    }
+
+    throw lastError || new Error('请求失败')
+  } finally {
+    release()
+  }
 }

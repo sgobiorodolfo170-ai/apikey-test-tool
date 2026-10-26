@@ -1,11 +1,13 @@
-import axios from 'axios'
+import http from './http.js'
 import {
   buildUrl,
   getErrorMessage,
   createController,
   releaseController,
   runConcurrentBatch,
+  acquireSignal,
 } from './utils.js'
+import { createSseParser } from './sse.js'
 
 const TEST_PROMPT = '这是大模型连通性测试'
 const TIMEOUT = 30000
@@ -18,7 +20,7 @@ export async function testAnthropicConnection(config) {
   const controller = createController()
 
   try {
-    await axios.post(
+    await http.post(
       buildUrl(baseUrl, '/messages'),
       {
         model: 'claude-3-haiku-20240307',
@@ -68,12 +70,15 @@ export async function listAnthropicModels(_config) {
   return {
     success: true,
     models: [
+      { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1' },
+      { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
+      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
+      { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
+      { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
       { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
       { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet' },
       { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' },
-      { id: 'claude-2.1', name: 'Claude 2.1' },
-      { id: 'claude-2.0', name: 'Claude 2.0' },
-      { id: 'claude-instant-1.2', name: 'Claude Instant' },
     ],
   }
 }
@@ -85,7 +90,7 @@ export async function testAnthropicModelLatency(config, model) {
   const controller = createController()
 
   try {
-    await axios.post(
+    await http.post(
       buildUrl(baseUrl, '/messages'),
       {
         model: modelId,
@@ -138,4 +143,94 @@ export async function testAnthropicModels(config, models, concurrency = 5) {
     (model) => testAnthropicModelLatency(config, model),
     concurrency,
   )
+}
+
+// 聊天补全（返回助手回复文本），供聊天面板通过统一适配器调用
+export async function sendAnthropicChat(
+  config,
+  { model, messages, maxTokens = 500, timeout = 60000 },
+) {
+  const { apiKey, baseUrl } = config
+  const controller = createController()
+
+  try {
+    const response = await http.post(
+      buildUrl(baseUrl, '/messages'),
+      {
+        model,
+        messages: messages.map((m) => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content,
+        })),
+        max_tokens: maxTokens,
+      },
+      {
+        headers: {
+          'x-api-key': apiKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+        },
+        timeout,
+        signal: controller.signal,
+      },
+    )
+    return response.data?.content?.[0]?.text || '无响应'
+  } finally {
+    releaseController(controller)
+  }
+}
+
+// ---------- 流式聊天 ----------
+export async function streamAnthropicChat(
+  config,
+  { model, messages, maxTokens = 500, timeout = 120000, signal },
+  onDelta,
+) {
+  const { apiKey, baseUrl } = config
+  const { signal: abortSignal, release } = acquireSignal(signal)
+
+  try {
+    let full = ''
+    const parser = createSseParser(({ data }) => {
+      let json
+      try {
+        json = JSON.parse(data)
+      } catch {
+        return
+      }
+      if (json?.type === 'content_block_delta' && typeof json.delta?.text === 'string') {
+        full += json.delta.text
+        onDelta?.(json.delta.text)
+      }
+    })
+
+    await http.stream(
+      buildUrl(baseUrl, '/messages'),
+      {
+        model,
+        messages: messages.map((m) => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content,
+        })),
+        max_tokens: maxTokens,
+        stream: true,
+      },
+      {
+        headers: {
+          'x-api-key': apiKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          Accept: 'text/event-stream',
+        },
+        timeout,
+        signal: abortSignal,
+      },
+      (chunk) => parser.push(chunk),
+    )
+
+    parser.flush()
+    return full
+  } finally {
+    release()
+  }
 }

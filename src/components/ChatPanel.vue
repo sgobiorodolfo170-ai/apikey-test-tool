@@ -1,6 +1,8 @@
 <template>
   <div class="card p-6 flex flex-col h-full w-full">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">聊天测试</h2>
+    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">
+      聊天测试
+    </h2>
 
     <div class="bg-surface-alt rounded-card p-4 flex-1 flex flex-col min-h-0">
       <div class="rounded-card p-4 flex-1 min-h-0 overflow-y-auto mb-4 chat-bg">
@@ -15,10 +17,12 @@
             :class="msg.role === 'user' ? 'items-end' : 'items-start'"
           >
             <div
-              class="max-w-[80%] rounded-card px-4 py-2"
-              :class="msg.role === 'user' ? 'bg-accent text-white' : 'bg-surface-hover text-text-primary'"
+              class="max-w-[80%] rounded-card px-4 py-2 whitespace-pre-wrap break-words"
+              :class="
+                msg.role === 'user' ? 'bg-accent text-white' : 'bg-surface-hover text-text-primary'
+              "
             >
-              {{ msg.content }}
+              {{ msg.content }}<span v-if="msg.streaming" class="stream-cursor">▌</span>
             </div>
             <div v-if="msg.latency" class="text-xs text-text-muted mt-1">
               响应时间: {{ msg.latency }}ms
@@ -40,20 +44,25 @@
           @compositionend="isComposing = false"
         ></textarea>
         <button
+          v-if="sending"
+          class="btn-ghost px-4 py-2"
+          title="停止生成（保留已输出内容）"
+          @click="stopStreaming"
+        >
+          停止
+        </button>
+        <button
           :disabled="!selectedModel || !chatInput.trim() || sending"
           class="btn-primary px-4 py-2"
           @click="sendMessage"
         >
-          {{ sending ? '发送中...' : '发送' }}
+          {{ sending ? '生成中...' : '发送' }}
         </button>
       </div>
 
       <div class="flex items-center gap-3">
         <div class="relative flex-1">
-          <select
-            v-model="selectedModel"
-            class="select chat-bg"
-          >
+          <select v-model="selectedModel" class="select chat-bg">
             <option value="">选择模型</option>
             <option v-for="model in successModels" :key="model.model" :value="model.model">
               {{ model.model }} ({{ model.latency }}ms)
@@ -82,7 +91,7 @@
 import { ref, computed, watch } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
 import { useChatStore } from '../stores/chatStore.js'
-import axios from 'axios'
+import { getApiAdapter } from '../api/modes.js'
 
 export default {
   name: 'ChatPanel',
@@ -98,6 +107,7 @@ export default {
     const testingModel = ref(false)
     const modelTestResult = ref(null)
     const selectedModel = ref('')
+    const activeController = ref(null)
 
     const successModels = computed(() => {
       if (!testStore.currentResult?.models) return []
@@ -135,55 +145,20 @@ export default {
       modelTestResult.value = null
 
       const config = testStore.currentResult.config
-      const startTime = Date.now()
 
       try {
-        const baseUrl = config.baseUrl.replace(/\/$/, '')
-        const isAnthropic = config.apiMode === 'anthropic'
-
-        if (isAnthropic) {
-          await axios.post(
-            `${baseUrl}/messages`,
-            {
-              model: selectedModel.value,
-              messages: [{ role: 'user', content: '测试连接' }],
-              max_tokens: 10,
-            },
-            {
-              headers: {
-                'x-api-key': config.apiKey,
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01',
-              },
-              timeout: 30000,
-            },
-          )
-        } else {
-          await axios.post(
-            `${baseUrl}/chat/completions`,
-            {
-              model: selectedModel.value,
-              messages: [{ role: 'user', content: '测试连接' }],
-              max_tokens: 5,
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-                'Content-Type': 'application/json',
-              },
-              timeout: 30000,
-            },
-          )
-        }
+        const adapter = getApiAdapter(config.apiMode)
+        const result = await adapter.testModelLatency(config, selectedModel.value)
 
         modelTestResult.value = {
-          success: true,
-          latency: Date.now() - startTime,
+          success: result.status === 'success',
+          latency: result.latency,
+          error: result.error,
         }
       } catch (error) {
         modelTestResult.value = {
           success: false,
-          latency: Date.now() - startTime,
+          latency: 0,
           error: error.response?.data?.error?.message || error.message,
         }
       }
@@ -204,86 +179,97 @@ export default {
       chatInput.value = ''
       if (chatInputRef.value) chatInputRef.value.value = ''
       chatStore.addMessage({ role: 'user', content: userMessage })
-      sending.value = true
-      loadingResponse.value = true
 
       const config = testStore.currentResult?.config
       if (!config) {
         chatStore.addMessage({ role: 'assistant', content: '错误：缺少API配置信息' })
-        sending.value = false
-        loadingResponse.value = false
         return
       }
 
+      const history = chatStore.messages.map((m) => ({ role: m.role, content: m.content }))
+      const adapter = getApiAdapter(config.apiMode)
+      const canStream = typeof adapter.chatStream === 'function'
+
+      const controller = new AbortController()
+      activeController.value = controller
+      sending.value = true
+      loadingResponse.value = true
+      const startTime = Date.now()
+
       try {
-        const startTime = Date.now()
-        const baseUrl = config.baseUrl.replace(/\/$/, '')
-        const isAnthropic = config.apiMode === 'anthropic'
+        if (canStream) {
+          // 先占位，再逐块追加，避免整段等待
+          chatStore.addMessage({ role: 'assistant', content: '', streaming: true })
+          const target = chatStore.messages[chatStore.messages.length - 1]
+          let firstChunk = true
 
-        let response
-        if (isAnthropic) {
-          response = await axios.post(
-            `${baseUrl}/messages`,
+          const text = await adapter.chatStream(
+            config,
             {
               model: selectedModel.value,
-              messages: chatStore.messages.map((m) => ({
-                role: m.role === 'assistant' ? 'assistant' : 'user',
-                content: m.content,
-              })),
-              max_tokens: 500,
+              messages: history,
+              maxTokens: 500,
+              timeout: 120000,
+              signal: controller.signal,
             },
-            {
-              headers: {
-                'x-api-key': config.apiKey,
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01',
-              },
-              timeout: 60000,
+            (delta) => {
+              if (firstChunk) {
+                firstChunk = false
+                loadingResponse.value = false
+              }
+              target.content += delta
             },
           )
-        } else {
-          response = await axios.post(
-            `${baseUrl}/chat/completions`,
-            {
-              model: selectedModel.value,
-              messages: chatStore.messages.map((m) => ({
-                role: m.role,
-                content: m.content,
-              })),
-              max_tokens: 500,
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-                'Content-Type': 'application/json',
-              },
-              timeout: 60000,
-            },
-          )
-        }
 
-        const latency = Date.now() - startTime
-        let assistantMessage
-        if (isAnthropic) {
-          assistantMessage = response.data.content?.[0]?.text || '无响应'
+          if (!target.content && text) target.content = text
+          if (!target.content) target.content = '（模型未返回内容）'
+          target.streaming = false
+          target.latency = Date.now() - startTime
         } else {
-          assistantMessage = response.data.choices?.[0]?.message?.content || '无响应'
-        }
+          const assistantMessage = await adapter.chat(config, {
+            model: selectedModel.value,
+            messages: history,
+            maxTokens: 500,
+          })
 
-        chatStore.addMessage({
-          role: 'assistant',
-          content: assistantMessage,
-          latency,
-        })
+          chatStore.addMessage({
+            role: 'assistant',
+            content: assistantMessage,
+            latency: Date.now() - startTime,
+          })
+        }
       } catch (error) {
-        chatStore.addMessage({
-          role: 'assistant',
-          content: `错误: ${error.response?.data?.error?.message || error.message}`,
-        })
-      }
+        const aborted =
+          error?.name === 'CanceledError' ||
+          error?.name === 'AbortError' ||
+          error?.code === 'ERR_CANCELED'
+        const last = chatStore.messages[chatStore.messages.length - 1]
+        const reason = error?.response?.data?.error?.message || error?.message || '请求失败'
 
-      sending.value = false
-      loadingResponse.value = false
+        // 已经输出了一部分：保留内容并标注，而不是整段丢弃
+        if (last && last.role === 'assistant' && last.streaming) {
+          last.streaming = false
+          if (!last.content) {
+            last.content = aborted ? '（已停止，未收到内容）' : `错误: ${reason}`
+          } else {
+            last.content += aborted ? '\n\n[已停止]' : `\n\n[中断: ${reason}]`
+          }
+          last.latency = Date.now() - startTime
+        } else {
+          chatStore.addMessage({
+            role: 'assistant',
+            content: aborted ? '（已停止）' : `错误: ${reason}`,
+          })
+        }
+      } finally {
+        sending.value = false
+        loadingResponse.value = false
+        activeController.value = null
+      }
+    }
+
+    const stopStreaming = () => {
+      activeController.value?.abort()
     }
 
     return {
@@ -300,6 +286,7 @@ export default {
       successModels,
       onEnterKey,
       sendMessage,
+      stopStreaming,
     }
   },
 }
@@ -308,5 +295,15 @@ export default {
 <style scoped>
 .chat-bg {
   background-color: #ffffff;
+}
+.stream-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  animation: stream-blink 1s steps(2, start) infinite;
+}
+@keyframes stream-blink {
+  to {
+    visibility: hidden;
+  }
 }
 </style>

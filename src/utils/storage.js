@@ -1,10 +1,48 @@
 const HISTORY_FILE = 'history.json'
 const PROVIDERS_FILE = 'providers.json'
+const CHANNELS_FILE = 'channels.json'
 
 let userDataPath = null
 
 const writeQueue = new Map()
 const pendingWrites = new Set()
+
+// 同一文件的读-改-写必须串行，否则并发保存会互相覆盖（后写的读到旧数据）
+const fileLocks = new Map()
+
+function withFileLock(fileName, task) {
+  const previous = fileLocks.get(fileName) || Promise.resolve()
+  const next = previous.then(task, task)
+  fileLocks.set(
+    fileName,
+    next.catch(() => {}),
+  )
+  return next
+}
+
+// API Key 落盘前用 Electron safeStorage 加密（主进程侧 DPAPI / Keychain）。
+// 没有桥接（浏览器调试、单测）时原样返回，保持旧行为。
+async function sealSecrets(data) {
+  if (!window.electronAPI?.secureStore) return data
+  try {
+    const result = await window.electronAPI.secureStore('encrypt', data)
+    return result?.ok ? result.data : data
+  } catch (error) {
+    console.error('密钥加密失败，将按明文保存:', error)
+    return data
+  }
+}
+
+async function unsealSecrets(data) {
+  if (!window.electronAPI?.secureStore) return data
+  try {
+    const result = await window.electronAPI.secureStore('decrypt', data)
+    return result?.ok ? result.data : data
+  } catch (error) {
+    console.error('密钥解密失败:', error)
+    return data
+  }
+}
 
 export async function initStorage() {
   if (window.electronAPI) {
@@ -26,7 +64,7 @@ async function readJsonFile(fileName, defaultValue = {}) {
     if (window.electronAPI) {
       const result = await window.electronAPI.readFile(filePath)
       if (result.success) {
-        return normalizeData(JSON.parse(result.data))
+        return await unsealSecrets(normalizeData(JSON.parse(result.data)))
       }
     }
     return defaultValue
@@ -47,8 +85,11 @@ async function writeJsonFile(fileName, data, isRetry = false) {
   try {
     const filePath = await getFilePath(fileName)
     if (window.electronAPI) {
-      const payload = addVersion(data)
-      await window.electronAPI.writeFile(filePath, JSON.stringify(payload, null, 2))
+      const payload = addVersion(await sealSecrets(data))
+      const result = await window.electronAPI.writeFile(filePath, JSON.stringify(payload, null, 2))
+      if (!result?.success) {
+        throw new Error(result?.error || `写入 ${fileName} 失败`)
+      }
       return true
     }
     return false
@@ -86,19 +127,60 @@ export async function readProviderSettings(providerName) {
 }
 
 export async function saveProvider(providerName, settings) {
-  const providers = await readJsonFile(PROVIDERS_FILE, {})
-  providers[providerName] = {
-    ...providers[providerName],
-    ...settings,
-    updatedAt: new Date().toISOString(),
-  }
-  return await writeJsonFile(PROVIDERS_FILE, providers)
+  return withFileLock(PROVIDERS_FILE, async () => {
+    const providers = await readJsonFile(PROVIDERS_FILE, {})
+    providers[providerName] = {
+      ...providers[providerName],
+      ...settings,
+      updatedAt: new Date().toISOString(),
+    }
+    return await writeJsonFile(PROVIDERS_FILE, providers)
+  })
 }
 
 export async function deleteProvider(providerName) {
-  const providers = await readJsonFile(PROVIDERS_FILE, {})
-  delete providers[providerName]
-  return await writeJsonFile(PROVIDERS_FILE, providers)
+  return withFileLock(PROVIDERS_FILE, async () => {
+    const providers = await readJsonFile(PROVIDERS_FILE, {})
+    delete providers[providerName]
+    return await writeJsonFile(PROVIDERS_FILE, providers)
+  })
+}
+
+// ---------- 渠道（多 Key / 多站点） ----------
+// 与 providers.json 的区别：providers 只记「某名字对应的 Base URL/模式」，
+// channels 是完整的可用配置（含加密后的 Key），用于在多条渠道间切换与对比。
+
+export async function readChannels() {
+  const list = await readJsonFile(CHANNELS_FILE, [])
+  return Array.isArray(list) ? list : []
+}
+
+export async function saveChannel(channel) {
+  return withFileLock(CHANNELS_FILE, async () => {
+    const list = await readChannels()
+    const now = new Date().toISOString()
+    const index = list.findIndex((item) => item.id === channel.id)
+
+    let next
+    if (index >= 0) {
+      next = [...list]
+      next[index] = { ...list[index], ...channel, updatedAt: now }
+    } else {
+      next = [...list, { id: generateId(), createdAt: now, updatedAt: now, ...channel }]
+    }
+
+    await writeJsonFile(CHANNELS_FILE, next)
+    return next
+  })
+}
+
+export async function deleteChannel(id) {
+  return withFileLock(CHANNELS_FILE, async () => {
+    const list = await readChannels()
+    const next = list.filter((item) => item.id !== id)
+    await writeJsonFile(CHANNELS_FILE, next)
+    return next
+  })
 }
 
 export async function readHistory() {
@@ -106,24 +188,26 @@ export async function readHistory() {
 }
 
 export async function writeHistory(data) {
-  return await writeJsonFile(HISTORY_FILE, data)
+  return withFileLock(HISTORY_FILE, () => writeJsonFile(HISTORY_FILE, data))
 }
 
 export async function saveTestRecord(record) {
-  const history = await readHistory()
-  const newRecord = {
-    id: generateId(),
-    timestamp: new Date().toISOString(),
-    ...record,
-  }
-  history.unshift(newRecord)
+  return withFileLock(HISTORY_FILE, async () => {
+    const history = await readHistory()
+    const newRecord = {
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+      ...record,
+    }
+    history.unshift(newRecord)
 
-  if (history.length > 100) {
-    history.splice(100)
-  }
+    if (history.length > 100) {
+      history.splice(100)
+    }
 
-  await writeHistory(history)
-  return newRecord
+    await writeJsonFile(HISTORY_FILE, history)
+    return newRecord
+  })
 }
 
 export async function saveProviderFromRecord(record) {
@@ -136,15 +220,19 @@ export async function saveProviderFromRecord(record) {
 }
 
 export async function deleteTestRecord(id) {
-  const history = await readHistory()
-  const filtered = history.filter((record) => record.id !== id)
-  await writeHistory(filtered)
-  return filtered
+  return withFileLock(HISTORY_FILE, async () => {
+    const history = await readHistory()
+    const filtered = history.filter((record) => record.id !== id)
+    await writeJsonFile(HISTORY_FILE, filtered)
+    return filtered
+  })
 }
 
 export async function clearHistory() {
-  await writeHistory([])
-  return []
+  return withFileLock(HISTORY_FILE, async () => {
+    await writeJsonFile(HISTORY_FILE, [])
+    return []
+  })
 }
 
 function generateId() {

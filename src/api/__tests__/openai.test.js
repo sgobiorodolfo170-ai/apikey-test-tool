@@ -9,6 +9,7 @@ import {
   listOpenAIModels,
   testModelLatency,
   testAllModelsConcurrently,
+  sendChatCompletion,
 } from '../openai.js'
 
 const mockConfig = {
@@ -110,6 +111,36 @@ describe('openai api module', () => {
       const result = await listOpenAIModels(mockConfig)
       expect(result.success).toBe(false)
     })
+
+    it('should report 401 reason when key is invalid', async () => {
+      axios.get.mockRejectedValue({ response: { status: 401 } })
+      const result = await listOpenAIModels(mockConfig)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('401')
+      expect(result.status).toBe(401)
+    })
+
+    it('should report CORS/network error when no response', async () => {
+      axios.get.mockRejectedValue({ code: 'ERR_NETWORK' })
+      const result = await listOpenAIModels(mockConfig)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('CORS')
+      expect(result.status).toBeUndefined()
+    })
+
+    it('should accept bare-array model list responses', async () => {
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'm1' }, { id: 'm2' }] })
+      const result = await listOpenAIModels(mockConfig)
+      expect(result.success).toBe(true)
+      expect(result.models.map((m) => m.id)).toEqual(['m1', 'm2'])
+    })
+
+    it('should accept model lists under a models key', async () => {
+      axios.get.mockResolvedValueOnce({ data: { models: [{ id: 'm1' }] } })
+      const result = await listOpenAIModels(mockConfig)
+      expect(result.success).toBe(true)
+      expect(result.models).toHaveLength(1)
+    })
   })
 
   describe('testModelLatency', () => {
@@ -140,6 +171,36 @@ describe('openai api module', () => {
       const result = await testModelLatency(mockConfig, 'gpt-4')
       expect(result.status).toBe('failed')
     })
+
+    it('should retry with max_completion_tokens when model rejects max_tokens', async () => {
+      axios.post
+        .mockRejectedValueOnce({
+          response: {
+            status: 400,
+            data: {
+              error: {
+                message:
+                  "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+              },
+            },
+          },
+        })
+        .mockResolvedValueOnce({ data: { choices: [{ message: { content: 'ok' } }] } })
+      const result = await testModelLatency(mockConfig, 'gpt-5')
+      expect(result.status).toBe('success')
+      const retryBody = axios.post.mock.calls[1][1]
+      expect(retryBody.max_completion_tokens).toBe(5)
+      expect(retryBody.max_tokens).toBeUndefined()
+    })
+
+    it('should surface provider error message from response body', async () => {
+      axios.post.mockRejectedValue({
+        response: { status: 403, data: { error: { message: 'quota exceeded for region' } } },
+      })
+      const result = await testModelLatency(mockConfig, 'gpt-4')
+      expect(result.status).toBe('failed')
+      expect(result.error).toBe('quota exceeded for region')
+    })
   })
 
   describe('testAllModelsConcurrently', () => {
@@ -163,6 +224,36 @@ describe('openai api module', () => {
   describe('cancelAllRequests', () => {
     it('should clear active controllers', () => {
       expect(typeof cancelAllRequests).toBe('function')
+    })
+  })
+
+  describe('sendChatCompletion', () => {
+    it('should send chat completion and return response data', async () => {
+      axios.post.mockResolvedValueOnce({ data: { choices: [{ message: { content: 'hi' } }] } })
+      const data = await sendChatCompletion(mockConfig, {
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+      expect(data.choices[0].message.content).toBe('hi')
+      expect(axios.post.mock.calls[0][0]).toBe('https://api.openai.com/v1/chat/completions')
+      expect(axios.post.mock.calls[0][1].messages).toEqual([{ role: 'user', content: 'hello' }])
+    })
+
+    it('should fall back to /v1/chat/completions on 404', async () => {
+      axios.post
+        .mockRejectedValueOnce({ response: { status: 404 } })
+        .mockResolvedValueOnce({ data: { choices: [] } })
+      const data = await sendChatCompletion(mockConfig, { model: 'gpt-4', messages: [] })
+      expect(axios.post).toHaveBeenCalledTimes(2)
+      expect(axios.post.mock.calls[1][0]).toBe('https://api.openai.com/v1/v1/chat/completions')
+      expect(data).toEqual({ choices: [] })
+    })
+
+    it('should throw when all endpoints fail', async () => {
+      axios.post.mockRejectedValue({ response: { status: 401 } })
+      await expect(
+        sendChatCompletion(mockConfig, { model: 'gpt-4', messages: [] }),
+      ).rejects.toMatchObject({ response: { status: 401 } })
     })
   })
 })

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   initStorage,
   readProviders,
@@ -11,12 +11,28 @@ import {
   saveProviderFromRecord,
   deleteTestRecord,
   clearHistory,
+  readChannels,
+  saveChannel,
+  deleteChannel,
 } from '../storage.js'
 import {
   setupElectronAPIMock,
   clearElectronAPIMock,
   resetMockStore,
+  mockStore,
 } from '../../__tests__/setup.js'
+
+// 递归改写对象里的 apiKey，用来模拟主进程的 safeStorage 加解密
+function mapApiKeys(node, fn) {
+  if (Array.isArray(node)) return node.map((item) => mapApiKeys(item, fn))
+  if (!node || typeof node !== 'object') return node
+  const out = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'apiKey' && typeof value === 'string') out[key] = fn(value)
+    else out[key] = mapApiKeys(value, fn)
+  }
+  return out
+}
 
 describe('storage', () => {
   beforeEach(() => {
@@ -162,6 +178,66 @@ describe('storage', () => {
     })
   })
 
+  describe('key protection and concurrency', () => {
+    it('should encrypt apiKey before writing and decrypt it on read', async () => {
+      window.electronAPI.secureStore = vi.fn(async (op, data) => {
+        if (op === 'encrypt') {
+          return { ok: true, encrypted: true, data: mapApiKeys(data, (v) => `enc:${btoa(v)}`) }
+        }
+        return {
+          ok: true,
+          data: mapApiKeys(data, (v) => (v.startsWith('enc:') ? atob(v.slice(4)) : v)),
+        }
+      })
+
+      await saveTestRecord({
+        config: {
+          provider: 'p',
+          baseUrl: 'https://api.test.com',
+          apiMode: 'openai',
+          apiKey: 'sk-secret',
+        },
+        result: { connected: true },
+      })
+
+      const raw = JSON.stringify(mockStore.history)
+      expect(raw).not.toContain('sk-secret')
+      expect(raw).toContain('enc:')
+
+      const history = await readHistory()
+      expect(history[0].config.apiKey).toBe('sk-secret')
+    })
+
+    it('should keep plaintext keys readable (backward compatibility)', async () => {
+      window.electronAPI.secureStore = vi.fn(async (op, data) => {
+        if (op === 'encrypt') {
+          return { ok: true, encrypted: true, data: mapApiKeys(data, (v) => `enc:${btoa(v)}`) }
+        }
+        return {
+          ok: true,
+          data: mapApiKeys(data, (v) => (v.startsWith('enc:') ? atob(v.slice(4)) : v)),
+        }
+      })
+      mockStore.history = {
+        version: 1,
+        data: [{ id: 'old', config: { provider: 'legacy', apiKey: 'sk-plain' } }],
+      }
+
+      const history = await readHistory()
+      expect(history[0].config.apiKey).toBe('sk-plain')
+    })
+
+    it('should not lose records when saves run concurrently', async () => {
+      await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          saveTestRecord({ config: { provider: `p${i}` }, result: { connected: true } }),
+        ),
+      )
+      const history = await readHistory()
+      expect(history).toHaveLength(8)
+    })
+  })
+
   describe('error handling', () => {
     it('should handle readFile failure gracefully', async () => {
       window.electronAPI.readFile = async () => ({ success: false, error: 'file not found' })
@@ -169,18 +245,105 @@ describe('storage', () => {
       expect(history).toEqual([])
     })
 
-    it('should handle writeFile failure gracefully', async () => {
+    it('should surface writeFile failure to the caller', async () => {
       window.electronAPI.writeFile = async () => ({ success: false, error: 'write failed' })
-      const result = await saveTestRecord({
-        config: {
-          provider: 'test',
-          baseUrl: 'https://api.test.com',
-          apiMode: 'openai',
-          apiKey: 'sk-test',
-        },
-        result: { connected: true },
-      })
-      expect(result).toBeDefined()
+      await expect(
+        saveTestRecord({
+          config: {
+            provider: 'test',
+            baseUrl: 'https://api.test.com',
+            apiMode: 'openai',
+            apiKey: 'sk-test',
+          },
+          result: { connected: true },
+        }),
+      ).rejects.toThrow('write failed')
     })
+  })
+})
+
+describe('channels', () => {
+  beforeEach(() => {
+    setupElectronAPIMock()
+    resetMockStore()
+  })
+
+  it('creates a channel with id and timestamps', async () => {
+    const list = await saveChannel({
+      name: '渠道A',
+      baseUrl: 'https://a.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-a',
+    })
+
+    expect(list).toHaveLength(1)
+    expect(list[0].id).toBeTruthy()
+    expect(list[0].createdAt).toBeTruthy()
+    expect(list[0].updatedAt).toBeTruthy()
+
+    const stored = await readChannels()
+    expect(stored).toHaveLength(1)
+    expect(stored[0].name).toBe('渠道A')
+  })
+
+  it('updates an existing channel instead of appending a duplicate', async () => {
+    const first = await saveChannel({
+      name: '渠道A',
+      baseUrl: 'https://a.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-a',
+    })
+    const id = first[0].id
+
+    const second = await saveChannel({
+      id,
+      name: '渠道A（改名）',
+      baseUrl: 'https://a.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-a2',
+    })
+
+    expect(second).toHaveLength(1)
+    expect(second[0].id).toBe(id)
+    expect(second[0].name).toBe('渠道A（改名）')
+    expect(second[0].apiKey).toBe('sk-a2')
+  })
+
+  it('deletes a channel by id', async () => {
+    const list = await saveChannel({
+      name: '渠道A',
+      baseUrl: 'https://a.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-a',
+    })
+
+    const remaining = await deleteChannel(list[0].id)
+    expect(remaining).toHaveLength(0)
+    expect(await readChannels()).toHaveLength(0)
+  })
+
+  it('encrypts the api key before writing to disk', async () => {
+    window.electronAPI.secureStore = vi.fn(async (op, data) => {
+      if (op === 'encrypt') {
+        return { ok: true, encrypted: true, data: mapApiKeys(data, (v) => `enc:${btoa(v)}`) }
+      }
+      return {
+        ok: true,
+        data: mapApiKeys(data, (v) => (v.startsWith('enc:') ? atob(v.slice(4)) : v)),
+      }
+    })
+
+    await saveChannel({
+      name: '渠道A',
+      baseUrl: 'https://a.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-secret',
+    })
+
+    expect(JSON.stringify(mockStore.channels)).not.toContain('sk-secret')
+    expect(JSON.stringify(mockStore.channels)).toContain('enc:')
+
+    const stored = await readChannels()
+    expect(stored[0].apiKey).toBe('sk-secret')
   })
 })

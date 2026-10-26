@@ -1,12 +1,25 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, net, safeStorage } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
+const { spawn } = require('child_process')
+
+// 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
+if (process.env.APKEY_USER_DATA_DIR) {
+  app.setPath('userData', process.env.APKEY_USER_DATA_DIR)
+}
 
 const USER_DATA_PATH = app.getPath('userData')
 
+// 仅允许访问 userData 目录内的路径。
+// 不能用 startsWith 判断：同前缀的兄弟目录（如 userData + "X"）会被误判为合法。
 function isPathSafe(targetPath) {
+  if (typeof targetPath !== 'string' || targetPath.trim() === '') return false
   const resolved = path.resolve(targetPath)
-  return resolved.startsWith(USER_DATA_PATH)
+  const root = path.resolve(USER_DATA_PATH)
+  const relative = path.relative(root, resolved)
+  if (relative === '') return true
+  return !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 let mainWindow = null
@@ -25,7 +38,23 @@ const eventListeners = {
 }
 
 // IPC 处理函数列表
-const ipcHandlers = ['get-user-data-path', 'read-file', 'write-file', 'exists-file', 'log-error']
+const ipcHandlers = [
+  'get-user-data-path',
+  'read-file',
+  'write-file',
+  'exists-file',
+  'log-error',
+  'http-request',
+  'http-stream',
+  'run-code',
+  'http-abort',
+  'secure-store',
+  'secure-available',
+]
+
+// 进行中的 HTTP 请求：requestId -> AbortController
+const activeHttpRequests = new Map()
+const HTTP_DEFAULT_TIMEOUT = 30000
 
 function getLogFilePath() {
   const userDataPath = app.getPath('userData')
@@ -56,7 +85,9 @@ function loadWindowState() {
     if (fs.existsSync(STATE_FILE)) {
       return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
     }
-  } catch (_) {}
+  } catch {
+    // 状态文件损坏或不可读时使用默认窗口尺寸
+  }
   return { width: 1200, height: 800 }
 }
 
@@ -67,13 +98,31 @@ function saveWindowState() {
     const maximized = mainWindow.isMaximized()
     const state = { ...bounds, maximized }
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
-  } catch (_) {}
+  } catch {
+    // 窗口状态写入失败不影响应用运行
+  }
+}
+
+const MAX_LOG_BYTES = 1024 * 1024 // 超过 1MB 归档，避免日志无限增长
+
+function rotateLogIfNeeded(logPath) {
+  try {
+    if (!fs.existsSync(logPath)) return
+    if (fs.statSync(logPath).size < MAX_LOG_BYTES) return
+    const archive = logPath.replace(/\.md$/, '.1.md')
+    if (fs.existsSync(archive)) fs.unlinkSync(archive)
+    fs.renameSync(logPath, archive)
+  } catch {
+    // 归档失败（文件被占用等）时继续写当前文件
+  }
 }
 
 function logError(errorType, errorMessage, stackTrace) {
   try {
     const logPath = getLogFilePath()
     const timestamp = formatDate()
+
+    rotateLogIfNeeded(logPath)
 
     let existingContent = ''
     if (fs.existsSync(logPath)) {
@@ -117,6 +166,440 @@ eventListeners.unhandledRejection = (reason, _promise) => {
 }
 process.on('unhandledRejection', eventListeners.unhandledRejection)
 
+// ---------- 主进程 HTTP 代理 ----------
+// 渲染进程直接发请求会受 CORS 限制（官方 OpenAI / Anthropic 等均不放行浏览器直连），
+// 且 API Key 会暴露在渲染进程。统一由主进程 net.fetch 发出，天然绕过 CORS，
+// 同时把密钥留在主进程侧。
+
+function buildRequestBody(body, headers) {
+  if (body === undefined || body === null) return undefined
+  if (typeof body === 'string') return body
+  if (body.__formData === true && Array.isArray(body.parts)) {
+    const form = new FormData()
+    for (const part of body.parts) {
+      if (typeof part.base64 === 'string') {
+        const bytes = Buffer.from(part.base64, 'base64')
+        const blob = new Blob([bytes], { type: part.type || 'application/octet-stream' })
+        form.append(part.name, blob, part.filename || 'blob')
+      } else {
+        form.append(part.name, String(part.value ?? ''))
+      }
+    }
+    return form
+  }
+  if (!headers['content-type'] && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json'
+  }
+  return JSON.stringify(body)
+}
+
+// 把 Chromium 网络错误码翻译成 axios 风格的 code，复用渲染进程已有的错误文案
+function mapFetchError(error, { timedOut, cancelled }) {
+  if (cancelled) return { cancelled: true, code: 'ERR_CANCELED', message: '请求已取消' }
+  if (timedOut) return { code: 'ECONNABORTED', message: '请求超时' }
+
+  const raw = String(error?.cause?.code || error?.code || error?.message || '')
+  const codes = [
+    ['ERR_NAME_NOT_RESOLVED', 'ENOTFOUND'],
+    ['ERR_CONNECTION_REFUSED', 'ECONNREFUSED'],
+    ['ERR_CONNECTION_RESET', 'ECONNRESET'],
+    ['ERR_CONNECTION_CLOSED', 'ECONNRESET'],
+    ['ERR_CONNECTION_TIMED_OUT', 'ETIMEDOUT'],
+    ['ERR_INTERNET_DISCONNECTED', 'ENETUNREACH'],
+    ['ERR_ADDRESS_UNREACHABLE', 'ENETUNREACH'],
+    ['ERR_CERT', 'ERR_CERT'],
+  ]
+  for (const [needle, code] of codes) {
+    if (raw.includes(needle)) return { code, message: error?.message || code }
+  }
+  return { code: 'ERR_NETWORK', message: error?.message || '网络请求失败' }
+}
+
+async function handleHttpRequest(payload) {
+  const {
+    requestId,
+    url,
+    method = 'GET',
+    headers = {},
+    body,
+    timeout = HTTP_DEFAULT_TIMEOUT,
+    responseType,
+  } = payload || {}
+
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, code: 'ERR_INVALID_URL', message: `无效的请求地址: ${url}` }
+  }
+
+  const controller = new AbortController()
+  const key = String(requestId || `${Date.now()}-${Math.random()}`)
+  activeHttpRequests.set(key, controller)
+
+  let timedOut = false
+  const timer =
+    timeout > 0
+      ? setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, timeout)
+      : null
+
+  const requestHeaders = { ...headers }
+  const requestBody = buildRequestBody(body, requestHeaders)
+
+  try {
+    const response = await net.fetch(url, {
+      method,
+      headers: requestHeaders,
+      body: requestBody,
+      signal: controller.signal,
+      redirect: 'follow',
+    })
+
+    const responseHeaders = {}
+    response.headers.forEach((value, name) => {
+      responseHeaders[name.toLowerCase()] = value
+    })
+
+    const result = {
+      ok: true,
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+      contentType: responseHeaders['content-type'] || '',
+    }
+
+    if (responseType === 'arraybuffer') {
+      const buffer = Buffer.from(await response.arrayBuffer())
+      result.base64 = buffer.toString('base64')
+    } else {
+      result.text = await response.text()
+    }
+    return result
+  } catch (error) {
+    const cancelled = controller.signal.aborted && !timedOut
+    return { ok: false, ...mapFetchError(error, { timedOut, cancelled }) }
+  } finally {
+    if (timer) clearTimeout(timer)
+    activeHttpRequests.delete(key)
+  }
+}
+
+// ---------- 流式代理（SSE / NDJSON） ----------
+// 逐块把响应推回渲染进程；非 2xx 时把 body 一次性读完返回，交给渲染层按普通错误处理。
+
+function sendStreamEvent(sender, payload) {
+  if (!sender || sender.isDestroyed()) return
+  try {
+    sender.send('http-stream-event', payload)
+  } catch {
+    // 窗口已关闭，忽略
+  }
+}
+
+async function handleHttpStream(sender, payload) {
+  const { requestId, url, method = 'POST', headers = {}, body, timeout = 120000 } = payload || {}
+
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, code: 'ERR_INVALID_URL', message: `无效的请求地址: ${url}` }
+  }
+
+  const key = String(requestId || `${Date.now()}-${Math.random()}`)
+  const controller = new AbortController()
+  activeHttpRequests.set(key, controller)
+
+  let timedOut = false
+  const timer =
+    timeout > 0
+      ? setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, timeout)
+      : null
+
+  const requestHeaders = { ...headers }
+  if (!requestHeaders.Accept && !requestHeaders.accept) {
+    requestHeaders.Accept = 'text/event-stream'
+  }
+  const requestBody = buildRequestBody(body, requestHeaders)
+
+  try {
+    const response = await net.fetch(url, {
+      method,
+      headers: requestHeaders,
+      body: requestBody,
+      signal: controller.signal,
+      redirect: 'follow',
+    })
+
+    const responseHeaders = {}
+    response.headers.forEach((value, name) => {
+      responseHeaders[name.toLowerCase()] = value
+    })
+
+    const meta = {
+      ok: true,
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+      contentType: responseHeaders['content-type'] || '',
+    }
+
+    if (!response.ok || !response.body) {
+      return { ...meta, text: await response.text() }
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const text = decoder.decode(value, { stream: true })
+      if (text) sendStreamEvent(sender, { requestId: key, type: 'chunk', text })
+    }
+
+    const tail = decoder.decode()
+    if (tail) sendStreamEvent(sender, { requestId: key, type: 'chunk', text: tail })
+
+    sendStreamEvent(sender, { requestId: key, type: 'done' })
+    return meta
+  } catch (error) {
+    const mapped = mapFetchError(error, {
+      timedOut,
+      cancelled: controller.signal.aborted && !timedOut,
+    })
+
+    // 用户主动停止：不当成错误，返回已完成的内容
+    if (mapped.cancelled) {
+      sendStreamEvent(sender, { requestId: key, type: 'done', cancelled: true })
+      return { ok: true, cancelled: true, status: 200, statusText: 'OK', headers: {} }
+    }
+
+    sendStreamEvent(sender, { requestId: key, type: 'error', ...mapped })
+    return { ok: false, ...mapped }
+  } finally {
+    if (timer) clearTimeout(timer)
+    activeHttpRequests.delete(key)
+  }
+}
+
+// ---------- 密钥加密（Electron safeStorage / Windows DPAPI） ----------
+// 落盘前把 apiKey 加密成 enc:<base64>，读取时还原；旧版明文数据仍可读。
+
+const SECRET_FIELDS = new Set(['apiKey', 'api_key'])
+
+function walkSecrets(node, fn, depth = 0) {
+  if (depth > 8 || node === null || typeof node !== 'object') return node
+  if (Array.isArray(node)) return node.map((item) => walkSecrets(item, fn, depth + 1))
+  const out = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (SECRET_FIELDS.has(key) && typeof value === 'string') {
+      out[key] = fn(value)
+    } else {
+      out[key] = walkSecrets(value, fn, depth + 1)
+    }
+  }
+  return out
+}
+
+function handleSecureStore(op, data) {
+  const available = safeStorage.isEncryptionAvailable()
+
+  if (op === 'encrypt') {
+    if (!available) return { ok: true, encrypted: false, data }
+    const result = walkSecrets(data, (value) => {
+      if (!value || value.startsWith('enc:')) return value
+      return `enc:${safeStorage.encryptString(value).toString('base64')}`
+    })
+    return { ok: true, encrypted: true, data: result }
+  }
+
+  if (op === 'decrypt') {
+    const result = walkSecrets(data, (value) => {
+      if (!value.startsWith('enc:')) return value
+      try {
+        return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
+      } catch {
+        // 换了机器/用户或数据损坏时解密失败，返回空值让用户重新输入
+        return ''
+      }
+    })
+    return { ok: true, data: result }
+  }
+
+  return { ok: false, error: `未知操作: ${op}` }
+}
+
+// ---------- 代码题本地执行（不可信代码） ----------
+// 模型返回的代码按不可信输入处理：
+//   静态黑名单 → 独立子进程 → vm 禁用代码生成 → 3 秒硬超时 → 用完即删临时目录。
+// 不向子进程传任何密钥或用户数据，即使逃逸也拿不到有价值的信息。
+
+const SANDBOX_TIMEOUT_MS = 3000
+const SANDBOX_MAX_CODE = 4000
+const SANDBOX_FORBIDDEN = [
+  { re: /\brequire\s*\(/, reason: '禁止 require' },
+  { re: /\bimport\s*[({'"]/, reason: '禁止 import' },
+  { re: /\bprocess\b/, reason: '禁止访问 process' },
+  { re: /\bglobalThis\b/, reason: '禁止访问 globalThis' },
+  { re: /\bchild_process\b/, reason: '禁止访问子进程' },
+  { re: /\bFunction\s*\(/, reason: '禁止 Function 构造器' },
+  { re: /\beval\s*\(/, reason: '禁止 eval' },
+  { re: /__proto__/, reason: '禁止操作原型' },
+  { re: /\bconstructor\b/, reason: '禁止访问 constructor' },
+  { re: /\bfetch\s*\(/, reason: '禁止网络请求' },
+  { re: /\bXMLHttpRequest\b/, reason: '禁止网络请求' },
+  { re: /while\s*\(\s*(true|1)\s*\)/, reason: '禁止死循环' },
+  { re: /for\s*\(\s*;\s*;\s*\)/, reason: '禁止死循环' },
+]
+
+// 子进程里跑的测试脚手架（受信任代码，由主进程写入）
+const CODE_HARNESS_SOURCE = `const fs = require('fs')
+const vm = require('vm')
+const path = require('path')
+
+const dir = __dirname
+const code = fs.readFileSync(path.join(dir, 'solution.js'), 'utf8')
+const tests = JSON.parse(fs.readFileSync(path.join(dir, 'tests.json'), 'utf8'))
+
+const out = { results: [], error: null }
+
+try {
+  const context = vm.createContext({}, { codeGeneration: { strings: false, wasm: false } })
+  vm.runInContext(code, context, { timeout: 1000 })
+
+  let solve
+  try {
+    solve = vm.runInContext('typeof solve === "function" ? solve : undefined', context)
+  } catch (e) {
+    solve = undefined
+  }
+
+  if (typeof solve !== 'function') {
+    out.error = '未找到 solve 函数'
+  } else {
+    for (const t of tests) {
+      try {
+        const actual = solve(t.input)
+        out.results.push({
+          input: t.input,
+          expected: t.expected,
+          actual: actual === undefined ? null : actual,
+          pass: JSON.stringify(actual) === JSON.stringify(t.expected),
+        })
+      } catch (e) {
+        out.results.push({
+          input: t.input,
+          expected: t.expected,
+          actual: null,
+          pass: false,
+          error: String((e && e.message) || e),
+        })
+      }
+    }
+  }
+} catch (e) {
+  out.error = String((e && e.message) || e)
+}
+
+process.stdout.write(JSON.stringify(out))
+`
+
+function runSandboxChild(dir) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(dir, 'harness.cjs')], {
+      cwd: dir,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // 进程已退出
+      }
+      resolve({ ok: false, error: `执行超时（>${SANDBOX_TIMEOUT_MS}ms）` })
+    }, SANDBOX_TIMEOUT_MS)
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ ok: false, error: error.message })
+    })
+
+    child.on('close', () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const lastLine = stdout.trim().split('\n').filter(Boolean).pop()
+      try {
+        const parsed = JSON.parse(lastLine)
+        resolve({ ok: true, ...parsed })
+      } catch {
+        resolve({
+          ok: false,
+          error: (stderr.trim() || '无输出').slice(0, 300),
+        })
+      }
+    })
+  })
+}
+
+async function handleRunCode(payload) {
+  const { language = 'js', code, tests } = payload || {}
+
+  if (language !== 'js') {
+    return { ok: false, error: `暂只支持执行 JavaScript，收到 ${language}` }
+  }
+  if (typeof code !== 'string' || !code.trim()) {
+    return { ok: false, error: '代码为空' }
+  }
+  if (code.length > SANDBOX_MAX_CODE) {
+    return { ok: false, error: '代码过长' }
+  }
+  const blocked = SANDBOX_FORBIDDEN.find((item) => item.re.test(code))
+  if (blocked) {
+    return { ok: false, error: `代码包含受限用法：${blocked.reason}` }
+  }
+  if (!Array.isArray(tests) || tests.length === 0 || tests.length > 10) {
+    return { ok: false, error: '测试用例无效' }
+  }
+
+  let dir = null
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apikey-sbx-'))
+    fs.writeFileSync(path.join(dir, 'solution.js'), code, 'utf8')
+    fs.writeFileSync(path.join(dir, 'harness.cjs'), CODE_HARNESS_SOURCE, 'utf8')
+    fs.writeFileSync(path.join(dir, 'tests.json'), JSON.stringify(tests), 'utf8')
+    return await runSandboxChild(dir)
+  } catch (error) {
+    return { ok: false, error: error.message }
+  } finally {
+    if (dir) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // 清理失败不影响结果
+      }
+    }
+  }
+}
+
 function createWindow() {
   const state = loadWindowState()
 
@@ -126,13 +609,24 @@ function createWindow() {
     ...(state.maximized ? {} : { x: state.x, y: state.y }),
     minWidth: 900,
     minHeight: 600,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
     icon: path.join(__dirname, '../ico/icon-256x256.png'),
     autoHideMenuBar: true,
+  })
+
+  // 页面渲染完成后再显示窗口，避免启动时出现长时间白屏
+  mainWindow.once('ready-to-show', () => {
+    if (state.maximized) {
+      mainWindow.maximize()
+    } else {
+      mainWindow.show()
+    }
   })
 
   mainWindow.webContents.on('render-process-gone', (event, details) => {
@@ -141,6 +635,10 @@ function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
     logError('Page Load Failed', `${errorCode}: ${errorDescription}`, null)
+    // 加载失败时 ready-to-show 不会触发，需手动显示窗口避免一直空白
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
   })
 
   mainWindow.on('closed', () => {
@@ -151,10 +649,6 @@ function createWindow() {
   mainWindow.on('move', debounce(saveWindowState, 300))
   mainWindow.on('maximize', saveWindowState)
   mainWindow.on('unmaximize', saveWindowState)
-
-  if (state.maximized) {
-    mainWindow.maximize()
-  }
 
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
     mainWindow.loadURL('http://localhost:3000')
@@ -219,32 +713,51 @@ function cleanupResources() {
   console.log('资源清理完成')
 }
 
-app.whenReady().then(createWindow)
+function registerAppLifecycle() {
+  app.whenReady().then(createWindow)
 
-eventListeners.windowAllClosed = () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+  eventListeners.windowAllClosed = () => {
+    if (process.platform !== 'darwin') {
+      app.quit()
+    }
   }
-}
-app.on('window-all-closed', eventListeners.windowAllClosed)
+  app.on('window-all-closed', eventListeners.windowAllClosed)
 
-eventListeners.activate = () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow()
+  eventListeners.activate = () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
   }
-}
-app.on('activate', eventListeners.activate)
+  app.on('activate', eventListeners.activate)
 
-eventListeners.beforeQuit = (_event) => {
-  console.log('应用程序准备退出 (before-quit)')
-}
-app.on('before-quit', eventListeners.beforeQuit)
+  eventListeners.beforeQuit = (_event) => {
+    console.log('应用程序准备退出 (before-quit)')
+  }
+  app.on('before-quit', eventListeners.beforeQuit)
 
-eventListeners.willQuit = () => {
-  console.log('应用程序即将退出 (will-quit)')
-  cleanupResources()
+  eventListeners.willQuit = () => {
+    console.log('应用程序即将退出 (will-quit)')
+    cleanupResources()
+  }
+  app.on('will-quit', eventListeners.willQuit)
 }
-app.on('will-quit', eventListeners.willQuit)
+
+// 单实例：重复启动时聚焦已有窗口，避免两个进程同时读写 history.json
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      if (app.isReady()) createWindow()
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.focus()
+  })
+
+  registerAppLifecycle()
+}
 
 ipcMain.handle('get-user-data-path', () => {
   return app.getPath('userData')
@@ -285,4 +798,36 @@ ipcMain.handle('exists-file', async (event, filePath) => {
 ipcMain.handle('log-error', async (event, errorType, errorMessage, stackTrace) => {
   logError(errorType, errorMessage, stackTrace)
   return { success: true }
+})
+
+ipcMain.handle('http-request', async (event, payload) => {
+  return handleHttpRequest(payload)
+})
+
+ipcMain.handle('http-stream', async (event, payload) => {
+  return handleHttpStream(event.sender, payload)
+})
+
+ipcMain.handle('run-code', async (event, payload) => {
+  return handleRunCode(payload)
+})
+
+ipcMain.handle('http-abort', async (event, requestId) => {
+  const controller = activeHttpRequests.get(String(requestId))
+  if (!controller) return { success: false }
+  controller.abort()
+  activeHttpRequests.delete(String(requestId))
+  return { success: true }
+})
+
+ipcMain.handle('secure-store', async (event, op, data) => {
+  try {
+    return handleSecureStore(op, data)
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+})
+
+ipcMain.handle('secure-available', async () => {
+  return { available: safeStorage.isEncryptionAvailable() }
 })

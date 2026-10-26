@@ -1,35 +1,73 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2">配置</h2>
+  <div class="card p-6 flex flex-col h-full w-full overflow-y-auto" @scroll="closeDropdowns">
+    <div class="flex items-center justify-between border-b border-border pb-2">
+      <h2 class="text-xl font-bold text-text-primary">配置</h2>
+      <button
+        type="button"
+        class="btn-ghost text-xs px-2 py-1"
+        :disabled="!isValid"
+        title="把当前 Base URL / API Key 保存为可切换的渠道"
+        @click="saveAsChannel"
+      >
+        存为渠道
+      </button>
+    </div>
 
     <div class="grid grid-cols-2 gap-4 mt-4">
       <div>
         <label class="label">提供商名称</label>
-        <div class="relative">
+        <div ref="providerFieldRef" class="relative">
           <input
             ref="providerInput"
             v-model="config.provider"
             type="text"
             placeholder="选择或输入提供商"
-            list="provider-list"
-            class="input"
+            class="input pr-8"
+            @change="onProviderChange"
             @contextmenu.prevent="showContextMenu($event, 'provider')"
           />
-          <datalist id="provider-list">
-            <option v-for="p in savedProviders" :key="p" :value="p"></option>
-          </datalist>
+          <button
+            type="button"
+            class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-text-secondary hover:text-text-primary"
+            title="展开提供商列表"
+            @mousedown.stop.prevent="toggleProviderDropdown"
+          >
+            ▾
+          </button>
+          <Teleport to="body">
+            <div
+              v-if="providerDropdown.visible"
+              class="fixed z-50 bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 max-h-64 overflow-y-auto"
+              :style="{
+                left: providerDropdown.x + 'px',
+                top: providerDropdown.y + 'px',
+                width: providerDropdown.width + 'px',
+              }"
+            >
+              <div v-if="savedProviders.length === 0" class="px-3 py-2 text-text-muted text-sm">
+                暂无已保存的提供商
+              </div>
+              <button
+                v-for="p in savedProviders"
+                :key="p"
+                type="button"
+                class="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-hover truncate"
+                @mousedown.stop.prevent
+                @click="selectProvider(p)"
+              >
+                {{ p }}
+              </button>
+            </div>
+          </Teleport>
         </div>
       </div>
 
       <div>
         <label class="label">API 模式</label>
-        <select
-          v-model="config.apiMode"
-          class="select"
-        >
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="openai-like">OpenAI-like</option>
+        <select v-model="config.apiMode" class="select">
+          <option v-for="mode in apiModes" :key="mode.value" :value="mode.value">
+            {{ mode.label }}
+          </option>
         </select>
       </div>
     </div>
@@ -45,11 +83,7 @@
           class="input flex-1"
           @contextmenu.prevent="showContextMenu($event, 'baseUrl')"
         />
-        <button
-          class="btn-ghost px-3 text-sm"
-          title="清空Base URL"
-          @click="config.baseUrl = ''"
-        >
+        <button class="btn-ghost px-3 text-sm" title="清空Base URL" @click="config.baseUrl = ''">
           清空
         </button>
         <button
@@ -65,50 +99,198 @@
     <div>
       <label class="label">API Key</label>
       <div class="flex gap-2">
-        <input
-          ref="apiKeyInput"
-          v-model="config.apiKey"
-          type="text"
-          placeholder="sk-..."
-          class="input flex-1"
-          @contextmenu.prevent="showContextMenu($event, 'apiKey')"
-        />
-        <button
-          class="btn-ghost px-3 text-sm"
-          title="清空API Key"
-          @click="config.apiKey = ''"
-        >
+        <div class="relative flex-1">
+          <input
+            ref="apiKeyInput"
+            v-model="config.apiKey"
+            :type="showApiKey ? 'text' : 'password'"
+            placeholder="sk-..."
+            autocomplete="off"
+            spellcheck="false"
+            class="input w-full pr-14"
+            @contextmenu.prevent="showContextMenu($event, 'apiKey')"
+          />
+          <button
+            type="button"
+            class="absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+            :title="showApiKey ? '隐藏API Key' : '显示API Key'"
+            @click="showApiKey = !showApiKey"
+          >
+            {{ showApiKey ? '隐藏' : '显示' }}
+          </button>
+        </div>
+        <button class="btn-ghost px-3 text-sm" title="清空API Key" @click="config.apiKey = ''">
           清空
         </button>
-        <button
-          class="btn-ghost px-3 text-sm"
-          title="复制API Key"
-          @click="copyText(config.apiKey)"
-        >
+        <button class="btn-ghost px-3 text-sm" title="复制API Key" @click="copyText(config.apiKey)">
           复制
         </button>
       </div>
     </div>
 
     <div>
-      <label class="label">可用模型 (自动获取)</label>
+      <div class="flex items-center justify-between">
+        <label class="label">可用模型 (自动获取)</label>
+        <button
+          class="btn-ghost px-2 py-1 text-xs"
+          :disabled="testStore.isFetchingModels || !isValid"
+          title="重新获取模型列表"
+          @click="fetchModels"
+        >
+          重新获取
+        </button>
+      </div>
+      <div class="flex items-center gap-2 mb-2">
+        <input
+          v-model="modelFilter"
+          type="text"
+          placeholder="搜索模型名..."
+          class="input flex-1 text-xs py-1"
+        />
+        <button
+          class="btn-ghost text-xs px-2 py-1"
+          :disabled="filteredModels.length === 0"
+          title="选中当前筛选结果"
+          @click="selectAllVisible"
+        >
+          全选
+        </button>
+        <button
+          class="btn-ghost text-xs px-2 py-1"
+          :disabled="selectedModels.length === 0"
+          title="清空已选"
+          @click="clearSelection"
+        >
+          清空
+        </button>
+      </div>
+
       <div
         class="bg-surface-alt border border-border-light rounded-input px-3 py-2 min-h-[240px] max-h-[240px] overflow-y-auto"
       >
-        <div v-if="testStore.availableModels.length === 0" class="text-text-muted text-sm">
+        <div v-if="testStore.isFetchingModels" class="text-text-muted text-sm">
+          正在获取模型列表...
+        </div>
+        <div v-else-if="testStore.modelsError" class="text-danger text-sm break-all">
+          {{ testStore.modelsError }}
+        </div>
+        <div v-else-if="testStore.availableModels.length === 0" class="text-text-muted text-sm">
           输入API Key后自动获取
+        </div>
+        <div v-else-if="filteredModels.length === 0" class="text-text-muted text-sm">
+          没有匹配「{{ modelFilter }}」的模型
         </div>
         <div v-else class="flex flex-wrap gap-2">
           <span
-            v-for="model in testStore.availableModels"
+            v-for="model in filteredModels"
             :key="model"
-            class="bg-blue-600 text-white text-xs px-2 py-1 rounded cursor-pointer hover:bg-blue-700"
+            class="bg-blue-600 text-white text-xs rounded flex items-stretch overflow-hidden"
             :title="model"
-            @click="copyModel(model)"
           >
-            {{ model.length > 20 ? model.substring(0, 20) + '...' : model }}
+            <span
+              class="w-5 flex items-center justify-center border-r border-white/40 cursor-pointer hover:bg-blue-800 select-none"
+              :title="isSelected(model) ? '取消选择' : '选择该模型'"
+              @click.stop="toggleModelSelection(model)"
+            >
+              {{ isSelected(model) ? '✓' : '' }}
+            </span>
+            <span
+              class="px-2 py-1 cursor-pointer hover:bg-blue-700"
+              title="点击填入指定模型测试框"
+              @click="selectModel(model)"
+            >
+              {{ model.length > 20 ? model.substring(0, 20) + '...' : model }}
+            </span>
+            <span
+              class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
+              title="复制模型名称"
+              @click.stop="copyModel(model)"
+            >
+              📋
+            </span>
+            <span
+              class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
+              title="仅测试该模型的连通性"
+              @click.stop="onTestSingleModel(model)"
+            >
+              ⚡
+            </span>
           </span>
         </div>
+      </div>
+
+      <div v-if="selectedModels.length > 0" class="flex items-center justify-between mt-2">
+        <span class="text-xs text-text-secondary">
+          已选 {{ selectedModels.length }} 个模型
+          <span v-if="modelFilter.trim()">（筛选出 {{ filteredModels.length }} 个）</span>
+        </span>
+        <button
+          class="btn-primary text-xs px-3 py-1"
+          :disabled="testStore.isTesting"
+          @click="onTestSelected"
+        >
+          测试选中
+        </button>
+      </div>
+    </div>
+
+    <div>
+      <label class="label">指定模型测试</label>
+      <div class="flex gap-2">
+        <div ref="modelFieldRef" class="relative flex-1">
+          <input
+            ref="modelToTestInput"
+            v-model="modelToTest"
+            type="text"
+            placeholder="从检测出的模型中选择或手动输入"
+            class="input w-full pr-8"
+            @contextmenu.prevent="showContextMenu($event, 'modelToTest')"
+          />
+          <button
+            type="button"
+            class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-text-secondary hover:text-text-primary"
+            title="展开模型列表"
+            @mousedown.stop.prevent="toggleModelDropdown"
+          >
+            ▾
+          </button>
+          <Teleport to="body">
+            <div
+              v-if="modelDropdown.visible"
+              class="fixed z-50 bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 max-h-64 overflow-y-auto"
+              :style="{
+                left: modelDropdown.x + 'px',
+                top: modelDropdown.y + 'px',
+                width: modelDropdown.width + 'px',
+              }"
+            >
+              <div
+                v-if="testStore.availableModels.length === 0"
+                class="px-3 py-2 text-text-muted text-sm"
+              >
+                暂无检测到的模型
+              </div>
+              <button
+                v-for="model in testStore.availableModels"
+                :key="model"
+                type="button"
+                class="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-hover truncate"
+                @mousedown.stop.prevent
+                @click="selectModel(model)"
+              >
+                {{ model }}
+              </button>
+            </div>
+          </Teleport>
+        </div>
+        <button
+          class="btn-primary px-3 text-sm whitespace-nowrap"
+          :disabled="!modelToTest.trim() || testStore.isTesting || !isValid"
+          title="仅测试该模型的连通性"
+          @click="onTestSingleModel()"
+        >
+          测试该模型
+        </button>
       </div>
     </div>
 
@@ -130,45 +312,61 @@
     </div>
 
     <!-- 右键菜单 -->
-    <div
-      v-if="contextMenu.visible"
-      class="context-menu fixed bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 z-50"
-      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-    >
-      <button
-        class="w-full px-4 py-2 text-left text-text-primary hover:bg-surface-hover text-sm transition-colors"
-        @click="handleCopy"
+    <Teleport to="body">
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu fixed bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 z-50"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       >
-        复制
-      </button>
-      <button
-        class="w-full px-4 py-2 text-left text-text-primary hover:bg-surface-hover text-sm transition-colors"
-        @click="handlePaste"
-      >
-        粘贴
-      </button>
-    </div>
+        <button
+          class="w-full px-4 py-2 text-left text-text-primary hover:bg-surface-hover text-sm transition-colors"
+          @click="handleCopy"
+        >
+          复制
+        </button>
+        <button
+          class="w-full px-4 py-2 text-left text-text-primary hover:bg-surface-hover text-sm transition-colors"
+          @click="handlePaste"
+        >
+          粘贴
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
-import { readProviders } from '../utils/storage.js'
+import { useChannelStore } from '../stores/channelStore.js'
+import { useToastStore } from '../stores/toastStore.js'
+import { API_MODES, apiModeNeedsKey } from '../api/modes.js'
+import { readProviders, readProviderSettings, readHistory } from '../utils/storage.js'
 
 export default {
   name: 'ConfigPanel',
   setup() {
     const testStore = useTestStore()
+    const channelStore = useChannelStore()
+    const toastStore = useToastStore()
 
     const config = ref({
       provider: '',
-      baseUrl: 'https://api.openai.com/v1',
+      baseUrl: '',
       apiMode: 'openai',
       apiKey: '',
     })
 
     const savedProviders = ref([])
+    const modelToTest = ref('')
+    const showApiKey = ref(false)
+    const modelFilter = ref('')
+    const selectedModels = ref([])
+    const apiModes = API_MODES
+    const providerFieldRef = ref(null)
+    const modelFieldRef = ref(null)
+    const providerDropdown = ref({ visible: false, x: 0, y: 0, width: 0 })
+    const modelDropdown = ref({ visible: false, x: 0, y: 0, width: 0 })
     const contextMenu = ref({
       visible: false,
       x: 0,
@@ -176,19 +374,136 @@ export default {
       target: null,
     })
 
+    const needsApiKey = computed(() => apiModeNeedsKey(config.value.apiMode))
+
+    // 模型列表：搜索 + 批量勾选（中转站常有 200+ 模型，标签云直接刷屏）
+    const filteredModels = computed(() => {
+      const keyword = modelFilter.value.trim().toLowerCase()
+      const list = testStore.availableModels
+      if (!keyword) return list
+      return list.filter((model) => model.toLowerCase().includes(keyword))
+    })
+
+    const isSelected = (model) => selectedModels.value.includes(model)
+
+    const toggleModelSelection = (model) => {
+      if (isSelected(model)) {
+        selectedModels.value = selectedModels.value.filter((m) => m !== model)
+      } else {
+        selectedModels.value = [...selectedModels.value, model]
+      }
+    }
+
+    const selectAllVisible = () => {
+      selectedModels.value = [...new Set([...selectedModels.value, ...filteredModels.value])]
+    }
+
+    const clearSelection = () => {
+      selectedModels.value = []
+    }
+
+    const onTestSelected = () => {
+      if (selectedModels.value.length === 0 || testStore.isTesting) return
+      testStore.testSelectedModels({ ...config.value }, [...selectedModels.value])
+    }
+
+    watch(
+      () => testStore.availableModels,
+      () => {
+        selectedModels.value = []
+      },
+    )
+
     const isValid = computed(() => {
-      return config.value.baseUrl.trim() !== '' && config.value.apiKey.trim() !== ''
+      if (config.value.baseUrl.trim() === '') return false
+      if (!needsApiKey.value) return true
+      return config.value.apiKey.trim() !== ''
     })
 
     let fetchTimer = null
 
     const loadSavedProviders = async () => {
       try {
-        savedProviders.value = await readProviders()
+        const [providers, history] = await Promise.all([readProviders(), readHistory()])
+        const names = new Set(providers)
+        for (const record of history) {
+          if (record?.config?.provider) {
+            names.add(record.config.provider)
+          }
+        }
+        savedProviders.value = [...names]
       } catch (error) {
         console.error('加载提供商失败:', error)
         savedProviders.value = []
       }
+    }
+
+    // 选中提供商后自动加载其配置：
+    // baseUrl/apiMode 优先取 providers.json 中保存的设置；
+    // apiKey 从该提供商最近一条历史记录中补取（providers.json 不保存 apiKey）
+    const applyProviderConfig = async (name) => {
+      try {
+        const settings = await readProviderSettings(name)
+        const history = await readHistory()
+        const record = history.find((r) => r.config?.provider === name)
+
+        const merged = {
+          baseUrl: settings?.baseUrl || record?.config?.baseUrl,
+          apiMode: settings?.apiMode || record?.config?.apiMode,
+          apiKey: record?.config?.apiKey,
+        }
+
+        if (!merged.baseUrl && !merged.apiMode && !merged.apiKey) return
+        if (merged.baseUrl) config.value.baseUrl = merged.baseUrl
+        if (merged.apiMode) config.value.apiMode = merged.apiMode
+        if (merged.apiKey) config.value.apiKey = merged.apiKey
+      } catch (error) {
+        console.error('加载提供商配置失败:', error)
+      }
+    }
+
+    const openDropdown = (dropdown, el) => {
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      dropdown.value = {
+        visible: true,
+        x: rect.left,
+        y: rect.bottom + 4,
+        width: rect.width,
+      }
+    }
+
+    const toggleProviderDropdown = () => {
+      if (providerDropdown.value.visible) {
+        providerDropdown.value.visible = false
+        return
+      }
+      openDropdown(providerDropdown, providerFieldRef.value)
+    }
+
+    const toggleModelDropdown = () => {
+      if (modelDropdown.value.visible) {
+        modelDropdown.value.visible = false
+        return
+      }
+      openDropdown(modelDropdown, modelFieldRef.value)
+    }
+
+    const selectProvider = (name) => {
+      config.value.provider = name
+      providerDropdown.value.visible = false
+      applyProviderConfig(name)
+    }
+
+    const closeDropdowns = () => {
+      providerDropdown.value.visible = false
+      modelDropdown.value.visible = false
+    }
+
+    const onProviderChange = () => {
+      const name = config.value.provider.trim()
+      if (!name) return
+      applyProviderConfig(name)
     }
 
     const onTest = () => {
@@ -196,9 +511,24 @@ export default {
       testStore.testConnection({ ...config.value })
     }
 
-    const onSave = () => {
+    const selectModel = (model) => {
+      modelToTest.value = model
+      modelDropdown.value.visible = false
+    }
+
+    const onTestSingleModel = (model) => {
+      const target = typeof model === 'string' ? model.trim() : modelToTest.value.trim()
+      if (!target || !isValid.value || testStore.isTesting) return
+      if (typeof model === 'string') {
+        modelToTest.value = target
+      }
+      testStore.testSingleModel({ ...config.value }, target)
+    }
+
+    const onSave = async () => {
       if (!testStore.hasResult) return
-      testStore.saveResult({ ...config.value })
+      await testStore.saveResult({ ...config.value })
+      await loadSavedProviders()
     }
 
     const fetchModels = () => {
@@ -246,6 +576,9 @@ export default {
         case 'apiKey':
           textToCopy = config.value.apiKey
           break
+        case 'modelToTest':
+          textToCopy = modelToTest.value
+          break
       }
 
       if (textToCopy) {
@@ -271,11 +604,19 @@ export default {
           case 'apiKey':
             config.value.apiKey = text
             break
+          case 'modelToTest':
+            modelToTest.value = text
+            break
         }
       } catch (error) {
         console.error('粘贴失败:', error)
       }
       hideContextMenu()
+    }
+
+    const handleMousedownOutside = () => {
+      providerDropdown.value.visible = false
+      modelDropdown.value.visible = false
     }
 
     const handleClickOutside = () => {
@@ -299,42 +640,107 @@ export default {
     )
 
     watch(
-      [() => config.value.baseUrl, () => config.value.apiKey],
+      [() => config.value.baseUrl, () => config.value.apiKey, () => config.value.apiMode],
       () => {
         if (fetchTimer) clearTimeout(fetchTimer)
-        if (config.value.baseUrl.trim() && config.value.apiKey.trim()) {
+        if (config.value.baseUrl.trim() && isValid.value) {
           fetchTimer = setTimeout(() => fetchModels(), 500)
         }
       },
     )
 
+    const saveAsChannel = async () => {
+      if (!isValid.value) {
+        toastStore.addToast('请先填写 Base URL 与 API Key', 'warning')
+        return
+      }
+      const name = config.value.provider.trim() || config.value.baseUrl.trim()
+      const baseUrl = config.value.baseUrl.trim()
+      // 同名字 + 同地址视为同一条渠道，避免反复点击产生重复项
+      const existing = channelStore.channels.find(
+        (item) => item.name === name && item.baseUrl === baseUrl,
+      )
+
+      await channelStore.upsert({
+        ...(existing ? { id: existing.id } : {}),
+        name,
+        baseUrl,
+        apiMode: config.value.apiMode,
+        apiKey: config.value.apiKey,
+      })
+    }
+
+    // 从「渠道」页签点「使用」时，把渠道配置填回表单
+    watch(
+      () => channelStore.pendingApply,
+      (channel) => {
+        if (!channel) return
+        config.value = {
+          provider: channel.name ?? config.value.provider,
+          baseUrl: channel.baseUrl ?? config.value.baseUrl,
+          apiMode: channel.apiMode ?? config.value.apiMode,
+          apiKey: channel.apiKey ?? config.value.apiKey,
+        }
+        channelStore.consumeApply()
+      },
+    )
+
     onMounted(() => {
+      if (!channelStore.initialized) channelStore.load()
       loadSavedProviders()
+      document.addEventListener('mousedown', handleMousedownOutside)
       document.addEventListener('click', handleClickOutside)
+      window.addEventListener('resize', closeDropdowns)
     })
 
     onUnmounted(() => {
       if (fetchTimer) clearTimeout(fetchTimer)
+      document.removeEventListener('mousedown', handleMousedownOutside)
       document.removeEventListener('click', handleClickOutside)
+      window.removeEventListener('resize', closeDropdowns)
     })
 
     return {
       testStore,
       config,
       isValid,
+      apiModes,
       savedProviders,
+      modelToTest,
+      showApiKey,
+      modelFilter,
+      selectedModels,
+      filteredModels,
+      isSelected,
+      toggleModelSelection,
+      selectAllVisible,
+      clearSelection,
+      onTestSelected,
+      saveAsChannel,
       contextMenu,
+      onProviderChange,
       onTest,
+      selectModel,
+      onTestSingleModel,
       onSave,
+      fetchModels,
       copyText,
       copyModel,
       showContextMenu,
       handleCopy,
       handlePaste,
+      closeDropdowns,
+      toggleProviderDropdown,
+      toggleModelDropdown,
+      selectProvider,
+      providerDropdown,
+      modelDropdown,
+      providerFieldRef,
+      modelFieldRef,
+      loadSavedProviders,
     }
   },
 }
 </script>
 
-<style scoped>
-</style>
+<style scoped></style>
