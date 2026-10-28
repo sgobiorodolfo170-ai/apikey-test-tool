@@ -742,8 +742,11 @@ function registerAppLifecycle() {
   app.on('will-quit', eventListeners.willQuit)
 }
 
-// 单实例：重复启动时聚焦已有窗口，避免两个进程同时读写 history.json
-if (!app.requestSingleInstanceLock()) {
+// 单实例：重复启动时聚焦已有窗口，避免两个进程同时读写 history.json。
+// 冒烟/CI 用独立 userData 运行时不参与单实例锁，否则会和用户正在使用的实例互斥。
+const ISOLATED_RUN = Boolean(process.env.APKEY_USER_DATA_DIR)
+
+if (!ISOLATED_RUN && !app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
