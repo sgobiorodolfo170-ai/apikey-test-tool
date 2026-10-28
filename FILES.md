@@ -50,6 +50,7 @@ apikey-test-tool/
 │   │   ├── ResultPanel.vue   # 连接结果与模型速率
 │   │   ├── HistoryPanel.vue  # 历史记录
 │   │   ├── ChannelPanel.vue  # 渠道列表（切换 / 体检 / 删除）
+│   │   ├── ChannelCompare.vue# 渠道对比浮层
 │   │   ├── EvalPanel.vue     # 指纹匹配 / 能力测评
 │   │   ├── ChatPanel.vue     # 聊天测试（流式渲染 + 停止）
 │   │   └── Toast.vue         # 全局提示
@@ -58,6 +59,7 @@ apikey-test-tool/
 │   │   ├── testStore.js      # 连接测试、模型测试、结果保存
 │   │   ├── historyStore.js   # 历史记录读写
 │   │   ├── channelStore.js   # 渠道 CRUD 与「应用到配置」
+│   │   ├── updateStore.js    # 启动时检查更新
 │   │   ├── chatStore.js      # 聊天消息
 │   │   ├── evalStore.js      # 测评状态与进度
 │   │   └── toastStore.js     # 提示队列
@@ -69,6 +71,8 @@ apikey-test-tool/
 │   ├── utils/
 │   │   ├── storage.js        # JSON 持久化：串行写入、apiKey 加密、版本化
 │   │   ├── image.js          # 图片压缩（长边 1568 / JPEG 0.85）
+│   │   ├── comparison.js     # 渠道横向对比聚合与 Markdown 表格
+│   │   ├── update.js         # 版本比较与 GitHub Release 查询
 │   │   └── report.js         # 体检评分（能力 60% + 稳定性 40%）与 Markdown 报告
 │   │
 │   └── __tests__/            # 测试 setup 与 electronAPI mock
@@ -84,7 +88,7 @@ apikey-test-tool/
 ## 测试
 
 ```bash
-npm test          # vitest run，30 个文件 / 377 个用例
+npm test          # vitest run，34 个文件 / 409 个用例
 npm run smoke     # 端到端冒烟（需先 npm run build）
 npm run lint
 npm run format:check
@@ -115,6 +119,8 @@ SSE 与 NDJSON 解析器、存储层（加密/并发/失败）、判分与稳定
 - [x] 一键渠道体检 + Markdown 报告（可复制 / 保存到 userData/exports）
 - [x] 体检结论写入历史，形成可对比的渠道档案
 - [x] 多渠道管理（保存 / 切换 / 单渠道体检 / 删除）
+- [x] 渠道横向对比（综合分/能力/稳定性/一致性并排、最优最低标记、复制 Markdown）
+- [x] 版本显示与更新检查（仅在有新版本时显示更新按钮）
 - [x] 对话发图（压缩 + 五种协议多模态适配 + 模式能力校验）
 - [x] 模型列表搜索与批量测试
 - [x] 聊天测试（6 种模式支持流式，可中途停止）
