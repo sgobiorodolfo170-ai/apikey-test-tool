@@ -16,6 +16,7 @@ export default [
         ...globals.browser,
         ...globals.node,
         ...globals.vitest,
+        __APP_VERSION__: 'readonly',
       },
       ecmaVersion: 'latest',
       sourceType: 'module',

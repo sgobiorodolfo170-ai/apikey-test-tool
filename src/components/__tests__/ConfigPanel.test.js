@@ -13,6 +13,7 @@ vi.mock('../../utils/storage.js', () => ({
 
 import ConfigPanel from '../ConfigPanel.vue'
 import { useTestStore } from '../../stores/testStore.js'
+import { useUpdateStore } from '../../stores/updateStore.js'
 import { readProviders, readProviderSettings, readHistory } from '../../utils/storage.js'
 
 describe('ConfigPanel', () => {
@@ -366,5 +367,50 @@ describe('ConfigPanel', () => {
     expect(wrapper.vm.config.baseUrl).toBe('https://settings.com')
     expect(wrapper.vm.config.apiMode).toBe('openai')
     expect(wrapper.vm.config.apiKey).toBe('sk-from-history')
+  })
+})
+
+describe('ConfigPanel 版本与更新', () => {
+  let wrapper
+  let updateStore
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    updateStore = useUpdateStore()
+    wrapper = mount(ConfigPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+  })
+
+  it('always shows the current version next to the title', () => {
+    expect(wrapper.text()).toContain(`v${updateStore.currentVersion}`)
+  })
+
+  it('hides the update button when already up to date', () => {
+    expect(wrapper.findAll('button').some((b) => b.text().includes('更新'))).toBe(false)
+  })
+
+  it('shows the update button when a newer release exists', async () => {
+    updateStore.latest = { version: '99.0.0', url: 'https://github.com/x/y/releases/tag/v99.0.0' }
+    await wrapper.vm.$nextTick()
+
+    const updateButton = wrapper.findAll('button').find((b) => b.text().includes('更新'))
+    expect(updateButton).toBeTruthy()
+    expect(updateButton.attributes('title')).toContain('99.0.0')
+  })
+
+  it('opens the release page through the bridge', async () => {
+    const openExternal = vi.fn(async () => ({ success: true }))
+    window.electronAPI = { ...(window.electronAPI || {}), openExternal }
+    updateStore.latest = { version: '99.0.0', url: 'https://github.com/x/y/releases/tag/v99.0.0' }
+    await wrapper.vm.$nextTick()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('更新'))
+      .trigger('click')
+
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/x/y/releases/tag/v99.0.0')
   })
 })

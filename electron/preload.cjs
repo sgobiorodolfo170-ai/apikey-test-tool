@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 代码题本地执行（主进程子进程 + 硬超时）
   runCode: (payload) => ipcRenderer.invoke('run-code', payload),
 
+  // 用系统浏览器打开外部链接（主进程会校验域名）
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
   // 密钥加密存储（Electron safeStorage）
   secureStore: (op, data) => ipcRenderer.invoke('secure-store', op, data),
   secureAvailable: () => ipcRenderer.invoke('secure-available'),

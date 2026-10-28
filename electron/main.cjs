@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, net, safeStorage } = require('electron')
+const { app, BrowserWindow, ipcMain, net, safeStorage, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -47,6 +47,7 @@ const ipcHandlers = [
   'http-request',
   'http-stream',
   'run-code',
+  'open-external',
   'http-abort',
   'secure-store',
   'secure-available',
@@ -813,6 +814,26 @@ ipcMain.handle('http-stream', async (event, payload) => {
 
 ipcMain.handle('run-code', async (event, payload) => {
   return handleRunCode(payload)
+})
+
+// 只允许打开 GitHub 链接：避免把任意 URL 交给系统浏览器
+const ALLOWED_EXTERNAL_HOSTS = new Set(['github.com', 'www.github.com'])
+
+async function handleOpenExternal(url) {
+  try {
+    const parsed = new URL(String(url))
+    if (parsed.protocol !== 'https:' || !ALLOWED_EXTERNAL_HOSTS.has(parsed.hostname)) {
+      return { success: false, error: '仅允许打开 GitHub 链接' }
+    }
+    await shell.openExternal(parsed.toString())
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+ipcMain.handle('open-external', async (event, url) => {
+  return handleOpenExternal(url)
 })
 
 ipcMain.handle('http-abort', async (event, requestId) => {
