@@ -1,5 +1,20 @@
 <template>
   <div class="flex flex-col h-full min-h-0">
+    <div class="flex items-center justify-between mb-2 flex-shrink-0">
+      <span class="text-[11px] text-text-muted">
+        {{ channelStore.count }} 条渠道<span v-if="rows.length"> · {{ rows.length }} 条有体检</span>
+      </span>
+      <button
+        type="button"
+        class="btn-ghost text-xs px-2 py-0.5"
+        :disabled="rows.length === 0"
+        :title="rows.length === 0 ? '还没有体检记录' : '并排对比各渠道的体检结果'"
+        @click="showCompare = true"
+      >
+        对比
+      </button>
+    </div>
+
     <div
       v-if="channelStore.channels.length === 0"
       class="flex-1 flex flex-col items-center justify-center text-center gap-2 px-3"
@@ -75,21 +90,26 @@
       v-if="channelStore.channels.length > 0"
       class="text-[11px] text-text-muted mt-2 flex-shrink-0"
     >
-      共 {{ channelStore.channels.length }} 条渠道 · 分数为最近一次体检结果
+      分数为最近一次体检结果
     </div>
+
+    <ChannelCompare :visible="showCompare" :rows="rows" @close="showCompare = false" />
   </div>
 </template>
 
 <script>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channelStore.js'
 import { useHistoryStore } from '../stores/historyStore.js'
 import { useEvalStore } from '../stores/evalStore.js'
 import { useToastStore } from '../stores/toastStore.js'
 import { apiModeLabel } from '../api/modes.js'
+import { buildChannelComparison } from '../utils/comparison.js'
+import ChannelCompare from './ChannelCompare.vue'
 
 export default {
   name: 'ChannelPanel',
+  components: { ChannelCompare },
   setup() {
     const channelStore = useChannelStore()
     const historyStore = useHistoryStore()
@@ -97,6 +117,10 @@ export default {
     const toastStore = useToastStore()
 
     const checkingId = ref(null)
+    const showCompare = ref(false)
+
+    // 历史里所有有体检结论的渠道，按分数排序
+    const rows = computed(() => buildChannelComparison(historyStore.records, channelStore.channels))
 
     const modeLabel = (apiMode) => apiModeLabel(apiMode) || apiMode || '未知模式'
 
@@ -170,6 +194,8 @@ export default {
       channelStore,
       evalStore,
       checkingId,
+      showCompare,
+      rows,
       modeLabel,
       lastCheckup,
       scoreColor,
