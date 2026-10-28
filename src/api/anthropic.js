@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toAnthropicContent } from './multimodal.js'
 import {
   buildUrl,
   getErrorMessage,
@@ -160,7 +161,7 @@ export async function sendAnthropicChat(
         model,
         messages: messages.map((m) => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: m.content,
+          content: toAnthropicContent(m),
         })),
         max_tokens: maxTokens,
       },
@@ -210,7 +211,7 @@ export async function streamAnthropicChat(
         model,
         messages: messages.map((m) => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: m.content,
+          content: toAnthropicContent(m),
         })),
         max_tokens: maxTokens,
         stream: true,

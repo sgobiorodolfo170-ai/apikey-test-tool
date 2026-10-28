@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toResponsesContent } from './multimodal.js'
 import {
   buildUrl,
   getErrorMessage,
@@ -210,7 +211,7 @@ export async function sendResponsesChat(
             model,
             input: messages.map((m) => ({
               role: m.role === 'assistant' ? 'assistant' : 'user',
-              content: m.content,
+              content: toResponsesContent(m),
             })),
             max_output_tokens: maxTokens,
           },
@@ -273,7 +274,7 @@ export async function streamResponsesChat(
             model,
             input: messages.map((m) => ({
               role: m.role === 'assistant' ? 'assistant' : 'user',
-              content: m.content,
+              content: toResponsesContent(m),
             })),
             max_output_tokens: maxTokens,
             stream: true,

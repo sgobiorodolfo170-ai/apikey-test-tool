@@ -28,6 +28,7 @@ apikey-test-tool/
 │   ├── style.css             # 全局样式与组件类（card / input / btn-*）
 │   │
 │   ├── api/                  # 协议适配层
+│   │   ├── multimodal.js     # 图片消息 → 各协议多模态格式
 │   │   ├── http.js           # 统一 HTTP 出口：IPC 代理 / 浏览器回退 axios / 流式
 │   │   ├── sse.js            # SSE 与 NDJSON 增量解析器（跨块缓冲）
 │   │   ├── modes.js          # API 模式注册表（10 种模式 → 统一 adapter 接口）
@@ -67,6 +68,7 @@ apikey-test-tool/
 │   │
 │   ├── utils/
 │   │   ├── storage.js        # JSON 持久化：串行写入、apiKey 加密、版本化
+│   │   ├── image.js          # 图片压缩（长边 1568 / JPEG 0.85）
 │   │   └── report.js         # 体检评分（能力 60% + 稳定性 40%）与 Markdown 报告
 │   │
 │   └── __tests__/            # 测试 setup 与 electronAPI mock
@@ -82,7 +84,7 @@ apikey-test-tool/
 ## 测试
 
 ```bash
-npm test          # vitest run，26 个文件 / 346 个用例
+npm test          # vitest run，30 个文件 / 377 个用例
 npm run smoke     # 端到端冒烟（需先 npm run build）
 npm run lint
 npm run format:check
@@ -113,6 +115,7 @@ SSE 与 NDJSON 解析器、存储层（加密/并发/失败）、判分与稳定
 - [x] 一键渠道体检 + Markdown 报告（可复制 / 保存到 userData/exports）
 - [x] 体检结论写入历史，形成可对比的渠道档案
 - [x] 多渠道管理（保存 / 切换 / 单渠道体检 / 删除）
+- [x] 对话发图（压缩 + 五种协议多模态适配 + 模式能力校验）
 - [x] 模型列表搜索与批量测试
 - [x] 聊天测试（6 种模式支持流式，可中途停止）
 - [x] 历史记录保存 / 加载 / 删除 / 清空

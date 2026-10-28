@@ -12,6 +12,7 @@
 - ✅ 测试每个模型的响应速率（并发测试）
 - ✅ 模型列表搜索、批量勾选后只测选中项
 - ✅ 聊天测试支持流式输出（SSE / NDJSON），可中途停止并保留已输出内容
+- ✅ 对话支持发图：点击或直接粘贴图片，自动压缩后按各协议的多模态格式发送
 - ✅ 模型指纹匹配：23 个模型家族特征库（含版本自述探针），展示匹配度百分比
 - ✅ 模型能力测评：38 道固定题 + 10 道随机模板题（每次运行数字不同，防背题库），7 维度按难度加权评分
 - ✅ 稳定性采样：N 次连打统计成功率、P50/P95 延迟与 429 限流次数
@@ -48,6 +49,7 @@ apikey-test-tool/
 │   ├── App.vue           # 主组件（卡片式可拖拽布局）
 │   ├── api/
 │   │   ├── http.js       # 统一 HTTP 出口（IPC 代理 / 浏览器回退 axios / 流式）
+│   │   ├── multimodal.js # 统一图片消息 → OpenAI/Responses/Anthropic/Gemini/Ollama 格式
 │   │   ├── sse.js        # SSE 与 NDJSON 增量解析器
 │   │   ├── modes.js      # API 模式适配器注册表
 │   │   ├── openai.js / responses.js / anthropic.js / azure.js
@@ -128,7 +130,7 @@ npm run build
 ## 测试
 
 ```bash
-npm test          # 单元/组件测试（26 文件 / 346 用例）
+npm test          # 单元/组件测试（30 文件 / 377 用例）
 npm run smoke     # 端到端冒烟：真实 Electron，校验 HTTP 代理、SSE 分块、密钥加解密、代码沙箱、路径越权
 npm run lint
 npm run format:check
@@ -152,6 +154,15 @@ npm run format:check
 - 渲染进程开启 `contextIsolation` + `sandbox`，禁用 `nodeIntegration`；IPC 文件读写限制在 `userData` 目录内（`path.relative` 校验，杜绝同前缀兄弟目录绕过）。
 - `index.html` 内置 CSP，禁止加载远程脚本。
 - 注意：历史记录仍包含 Base URL 与模型列表等元数据；对外分享 `history.json` 前请确认无敏感信息。
+
+## 图片输入（多模态）
+
+对话面板支持附加图片（点击 🖼 选择，或直接把截图粘贴进输入框），最多 4 张：
+
+- 发送前统一压缩到长边 1568px 以内（视觉模型的有效分辨率上限），PNG 保留透明通道，其余转 JPEG；压缩失败会退回原图，不会卡住发送
+- 各协议自动转成自己的结构：OpenAI/Azure 用 `image_url` 数组、Responses 用 `input_image`、Anthropic 用 base64 `image` block、Gemini 用 `inline_data`、Ollama 用独立的 `images` 数组
+- 仅对支持视觉的模式开放（OpenAI / OpenAI-like / Responses / Anthropic / Azure / Gemini / Ollama）；图片生成、语音、Jev 模式会提示不支持并阻止发送
+- 注意：模式支持 ≠ 模型支持。选中的模型本身不支持图片时，服务端会返回错误，界面上会显示原始错误信息
 
 ## 流式支持范围
 

@@ -83,6 +83,21 @@ export const API_MODES = [
 // 无需 API Key 即可访问的模式（如本地 Ollama）
 export const API_MODES_WITHOUT_KEY = ['ollama']
 
+// 支持图片输入的模式（对话里可附图）。图片生成/语音/决策类模式不在此列。
+export const VISION_CAPABLE_MODES = [
+  'openai',
+  'openai-like',
+  'openai-responses',
+  'anthropic',
+  'azure-openai',
+  'gemini',
+  'ollama',
+]
+
+export function apiModeSupportsVision(apiMode) {
+  return VISION_CAPABLE_MODES.includes(apiMode)
+}
+
 const openAIAdapter = {
   testConnection: testOpenAIConnection,
   listModels: listOpenAIModels,

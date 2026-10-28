@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toOpenAIContent } from './multimodal.js'
 import {
   buildUrl,
   getErrorMessage,
@@ -294,7 +295,11 @@ export async function sendChatCompletion(
         const response = await postChatCompletion(
           buildUrl(baseUrl, endpoint),
           apiKey,
-          { model, messages, max_tokens: maxTokens },
+          {
+            model,
+            messages: messages.map((m) => ({ role: m.role, content: toOpenAIContent(m) })),
+            max_tokens: maxTokens,
+          },
           controller,
           timeout,
         )
@@ -392,7 +397,11 @@ export async function streamOpenAIChat(
         return await streamOpenAIOnce(
           buildUrl(baseUrl, endpoint),
           apiKey,
-          { model, messages, max_tokens: maxTokens },
+          {
+            model,
+            messages: messages.map((m) => ({ role: m.role, content: toOpenAIContent(m) })),
+            max_tokens: maxTokens,
+          },
           abortSignal,
           timeout,
           onDelta,

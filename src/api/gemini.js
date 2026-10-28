@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toGeminiParts } from './multimodal.js'
 import {
   getErrorMessage,
   extractProviderError,
@@ -59,7 +60,7 @@ function buildGenerateBody(messages, maxTokens) {
     }
     contents.push({
       role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }],
+      parts: toGeminiParts(message),
     })
   }
 

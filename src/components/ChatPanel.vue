@@ -17,12 +17,22 @@
             :class="msg.role === 'user' ? 'items-end' : 'items-start'"
           >
             <div
-              class="max-w-[80%] rounded-card px-4 py-2 whitespace-pre-wrap break-words"
+              class="max-w-[80%] rounded-card px-4 py-2 break-words"
               :class="
                 msg.role === 'user' ? 'bg-accent text-white' : 'bg-surface-hover text-text-primary'
               "
             >
-              {{ msg.content }}<span v-if="msg.streaming" class="stream-cursor">▌</span>
+              <div v-if="msg.images && msg.images.length" class="flex flex-wrap gap-2 mb-2">
+                <img
+                  v-for="(image, imageIndex) in msg.images"
+                  :key="imageIndex"
+                  :src="image.dataUrl"
+                  :alt="image.name || '图片'"
+                  class="max-h-40 max-w-[200px] rounded border border-white/40 object-cover"
+                />
+              </div>
+              <span class="whitespace-pre-wrap">{{ msg.content }}</span
+              ><span v-if="msg.streaming" class="stream-cursor">▌</span>
             </div>
             <div v-if="msg.latency" class="text-xs text-text-muted mt-1">
               响应时间: {{ msg.latency }}ms
@@ -32,14 +42,53 @@
         </div>
       </div>
 
+      <div v-if="attachments.length" class="flex flex-wrap gap-2 mb-2">
+        <div v-for="(attachment, index) in attachments" :key="index" class="relative">
+          <img
+            :src="attachment.dataUrl"
+            :alt="attachment.name"
+            class="h-16 w-16 rounded object-cover border border-border-light"
+          />
+          <button
+            type="button"
+            class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white text-xs leading-none"
+            title="移除图片"
+            @click="removeAttachment(index)"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
       <div class="flex gap-3 items-stretch mb-3">
+        <button
+          type="button"
+          class="btn-ghost px-3 py-2"
+          :title="
+            supportsVision
+              ? '添加图片（也可以直接粘贴截图）'
+              : `当前模式（${currentModeLabel}）不支持图片输入`
+          "
+          @click="pickImage"
+        >
+          🖼
+        </button>
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          class="hidden"
+          @change="onFilesPicked"
+        />
         <textarea
           ref="chatInputRef"
           v-model="chatInput"
-          placeholder="输入消息，按回车发送..."
+          placeholder="输入消息，按回车发送...（可粘贴图片）"
           rows="2"
           class="input resize-none chat-bg"
           @keydown.enter.exact="onEnterKey"
+          @paste="handlePaste"
           @compositionstart="isComposing = true"
           @compositionend="isComposing = false"
         ></textarea>
@@ -52,7 +101,7 @@
           停止
         </button>
         <button
-          :disabled="!selectedModel || !chatInput.trim() || sending"
+          :disabled="!selectedModel || (!chatInput.trim() && attachments.length === 0) || sending"
           class="btn-primary px-4 py-2"
           @click="sendMessage"
         >
@@ -91,7 +140,11 @@
 import { ref, computed, watch } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
 import { useChatStore } from '../stores/chatStore.js'
-import { getApiAdapter } from '../api/modes.js'
+import { useToastStore } from '../stores/toastStore.js'
+import { getApiAdapter, apiModeLabel, apiModeSupportsVision } from '../api/modes.js'
+import { prepareImage } from '../utils/image.js'
+
+const MAX_ATTACHMENTS = 4
 
 export default {
   name: 'ChatPanel',
@@ -108,6 +161,9 @@ export default {
     const modelTestResult = ref(null)
     const selectedModel = ref('')
     const activeController = ref(null)
+    const attachments = ref([])
+    const fileInputRef = ref(null)
+    const toastStore = useToastStore()
 
     const successModels = computed(() => {
       if (!testStore.currentResult?.models) return []
@@ -166,6 +222,62 @@ export default {
       testingModel.value = false
     }
 
+    const supportsVision = computed(() => {
+      const mode = testStore.currentResult?.config?.apiMode
+      return mode ? apiModeSupportsVision(mode) : false
+    })
+
+    const currentModeLabel = computed(() => apiModeLabel(testStore.currentResult?.config?.apiMode))
+
+    const pickImage = () => {
+      // 明确告知原因，比禁用按钮更好排查
+      if (!supportsVision.value) {
+        toastStore.addToast(
+          `当前模式（${currentModeLabel.value}）不支持图片输入，请切换到 OpenAI / Anthropic / Gemini 等对话模式`,
+          'warning',
+        )
+        return
+      }
+      fileInputRef.value?.click()
+    }
+
+    const addFiles = async (files) => {
+      for (const file of files) {
+        if (attachments.value.length >= MAX_ATTACHMENTS) {
+          toastStore.addToast(`最多添加 ${MAX_ATTACHMENTS} 张图片`, 'warning')
+          break
+        }
+        try {
+          attachments.value.push(await prepareImage(file))
+        } catch (error) {
+          toastStore.addToast(error.message, 'error')
+        }
+      }
+    }
+
+    const onFilesPicked = async (event) => {
+      const files = Array.from(event.target.files || [])
+      event.target.value = ''
+      await addFiles(files)
+    }
+
+    const handlePaste = async (event) => {
+      const items = Array.from(event.clipboardData?.items || [])
+      const files = items
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean)
+
+      if (files.length > 0) {
+        event.preventDefault()
+        await addFiles(files)
+      }
+    }
+
+    const removeAttachment = (index) => {
+      attachments.value.splice(index, 1)
+    }
+
     const onEnterKey = (e) => {
       if (isComposing.value) return
       e.preventDefault()
@@ -173,12 +285,10 @@ export default {
     }
 
     const sendMessage = async () => {
-      if (!chatInput.value.trim() || !selectedModel.value || sending.value) return
+      const text = chatInput.value.trim()
+      const images = attachments.value.map((item) => ({ dataUrl: item.dataUrl, name: item.name }))
 
-      const userMessage = chatInput.value.trim()
-      chatInput.value = ''
-      if (chatInputRef.value) chatInputRef.value.value = ''
-      chatStore.addMessage({ role: 'user', content: userMessage })
+      if ((!text && images.length === 0) || !selectedModel.value || sending.value) return
 
       const config = testStore.currentResult?.config
       if (!config) {
@@ -186,7 +296,25 @@ export default {
         return
       }
 
-      const history = chatStore.messages.map((m) => ({ role: m.role, content: m.content }))
+      // 图片生成 / 语音 / 决策类模式没有视觉输入能力，提前拦下，避免把 base64 发过去才报错
+      if (images.length > 0 && !apiModeSupportsVision(config.apiMode)) {
+        toastStore.addToast(
+          `当前模式（${apiModeLabel(config.apiMode)}）不支持图片输入，请切换到 OpenAI / Anthropic / Gemini 等对话模式`,
+          'error',
+        )
+        return
+      }
+
+      chatInput.value = ''
+      if (chatInputRef.value) chatInputRef.value.value = ''
+      attachments.value = []
+      chatStore.addMessage({ role: 'user', content: text, ...(images.length ? { images } : {}) })
+
+      const history = chatStore.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.images?.length ? { images: m.images } : {}),
+      }))
       const adapter = getApiAdapter(config.apiMode)
       const canStream = typeof adapter.chatStream === 'function'
 
@@ -284,6 +412,14 @@ export default {
       modelTestResult,
       selectedModel,
       successModels,
+      attachments,
+      fileInputRef,
+      supportsVision,
+      currentModeLabel,
+      pickImage,
+      onFilesPicked,
+      handlePaste,
+      removeAttachment,
       onEnterKey,
       sendMessage,
       stopStreaming,

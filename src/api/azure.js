@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toOpenAIContent } from './multimodal.js'
 import {
   getErrorMessage,
   extractProviderError,
@@ -198,7 +199,7 @@ export async function sendAzureChat(config, { model, messages, maxTokens = 500, 
     const response = await http.post(
       url,
       {
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: messages.map((m) => ({ role: m.role, content: toOpenAIContent(m) })),
         max_tokens: maxTokens,
       },
       {
@@ -244,7 +245,7 @@ export async function streamAzureChat(
     await http.stream(
       url,
       {
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: messages.map((m) => ({ role: m.role, content: toOpenAIContent(m) })),
         max_tokens: maxTokens,
         stream: true,
       },

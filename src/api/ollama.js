@@ -1,4 +1,5 @@
 import http from './http.js'
+import { toOllamaMessage } from './multimodal.js'
 import {
   getErrorMessage,
   extractProviderError,
@@ -166,7 +167,7 @@ export async function sendOllamaChat(
       `${base}/api/chat`,
       {
         model,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: messages.map(toOllamaMessage),
         stream: false,
         options: { num_predict: maxTokens },
       },
@@ -204,7 +205,7 @@ export async function streamOllamaChat(
       `${base}/api/chat`,
       {
         model,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: messages.map(toOllamaMessage),
         stream: true,
         options: { num_predict: maxTokens },
       },
