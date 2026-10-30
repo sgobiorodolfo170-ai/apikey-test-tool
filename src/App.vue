@@ -47,9 +47,9 @@
               </button>
               <HistoryPanel v-if="item.i === 'history'" />
               <ConfigPanel v-if="item.i === 'config'" />
-              <EvalPanel v-if="item.i === 'eval'" />
+              <ChatEvalPanel v-if="item.i === 'chateval'" />
               <ResultPanel v-if="item.i === 'result'" />
-              <ChatPanel v-if="item.i === 'chat'" />
+              <RelayPanel v-if="item.i === 'relay'" />
               <!-- 自定义边把手：覆盖整条右/下边缘，悬停显示调整大小光标 -->
               <div class="vue-resizable-handle edge-handle edge-right"></div>
               <div class="vue-resizable-handle edge-handle edge-bottom"></div>
@@ -67,8 +67,8 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import ConfigPanel from './components/ConfigPanel.vue'
 import ResultPanel from './components/ResultPanel.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
-import ChatPanel from './components/ChatPanel.vue'
-import EvalPanel from './components/EvalPanel.vue'
+import ChatEvalPanel from './components/ChatEvalPanel.vue'
+import RelayPanel from './components/RelayPanel.vue'
 import ToastContainer from './components/Toast.vue'
 import { useHistoryStore } from './stores/historyStore.js'
 import { cancelAllRequests as cancelOpenAIRequests } from './api/openai.js'
@@ -80,10 +80,9 @@ const PINS_KEY = 'dashboard-pins'
 
 const defaultLayout = [
   { i: 'history', x: 0, y: 0, w: 2, h: 10, minW: 2, minH: 4 },
-  { i: 'config', x: 2, y: 0, w: 2, h: 10, minW: 2, minH: 4 },
-  { i: 'eval', x: 4, y: 0, w: 2, h: 10, minW: 2, minH: 4 },
-  { i: 'result', x: 6, y: 0, w: 6, h: 6, minW: 3, minH: 3 },
-  { i: 'chat', x: 6, y: 6, w: 6, h: 4, minW: 3, minH: 3 },
+  { i: 'config', x: 2, y: 0, w: 4, h: 10, minW: 3, minH: 4 },
+  { i: 'chateval', x: 6, y: 0, w: 6, h: 6, minW: 3, minH: 4 },
+  { i: 'relay', x: 6, y: 6, w: 6, h: 4, minW: 3, minH: 3 },
 ]
 
 // 卡片间距；vue-grid-layout 的卡片定位含 margin 内缩：
@@ -169,8 +168,8 @@ export default {
     ConfigPanel,
     ResultPanel,
     HistoryPanel,
-    ChatPanel,
-    EvalPanel,
+    ChatEvalPanel,
+    RelayPanel,
     ToastContainer,
   },
   setup() {

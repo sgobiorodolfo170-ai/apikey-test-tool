@@ -414,3 +414,16 @@ describe('ConfigPanel 版本与更新', () => {
     expect(openExternal).toHaveBeenCalledWith('https://github.com/x/y/releases/tag/v99.0.0')
   })
 })
+
+describe('ConfigPanel 内嵌测试结果', () => {
+  it('renders the result section below the form', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂无测试结果')
+    // 结果区嵌在配置卡片里，不应再出现独立的 card 容器
+    expect(wrapper.findAll('.card')).toHaveLength(1)
+  })
+})

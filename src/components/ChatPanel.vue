@@ -1,9 +1,5 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">
-      聊天测试
-    </h2>
-
+  <div class="flex flex-col h-full w-full min-h-0">
     <div class="bg-surface-alt rounded-card p-4 flex-1 flex flex-col min-h-0">
       <div class="rounded-card p-4 flex-1 min-h-0 overflow-y-auto mb-4 chat-bg">
         <div v-if="chatStore.messages.length === 0" class="text-text-muted text-center">

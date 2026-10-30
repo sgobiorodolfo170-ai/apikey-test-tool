@@ -1,9 +1,5 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">
-      测试结果
-    </h2>
-
+  <div class="flex flex-col h-full w-full min-h-0">
     <div
       v-if="!testStore.currentResult"
       class="flex-1 flex items-center justify-center text-text-secondary"

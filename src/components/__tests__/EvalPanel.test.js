@@ -15,8 +15,9 @@ describe('EvalPanel', () => {
     testStore = useTestStore()
   })
 
-  it('should render the panel title', () => {
-    expect(wrapper.text()).toContain('模型测评')
+  it('should not render its own card chrome (title lives on the parent tab)', () => {
+    expect(wrapper.find('.card').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('模型测评')
   })
 
   it('should show a hint when there is no tested config', () => {

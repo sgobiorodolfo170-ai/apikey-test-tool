@@ -1,9 +1,5 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full overflow-y-auto">
-    <h2 class="text-xl font-bold text-text-primary border-b border-border pb-2 mb-4 flex-shrink-0">
-      模型测评
-    </h2>
-
+  <div class="flex flex-col h-full w-full min-h-0 overflow-y-auto">
     <div v-if="!config" class="flex-1 flex items-center justify-center text-text-muted text-sm">
       请先在「配置」面板填写并测试连接，即可对检测到的模型进行指纹匹配与能力测评
     </div>

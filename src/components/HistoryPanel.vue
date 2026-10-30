@@ -116,6 +116,13 @@
                 删除
               </button>
               <button
+                class="btn-ghost text-xs px-2 py-1"
+                title="把该提供商加入中转站（仅支持 OpenAI 兼容模式）"
+                @click.stop="addToRelay(record)"
+              >
+                加入中转站
+              </button>
+              <button
                 class="btn-primary text-xs px-2 py-1"
                 @click.stop="historyStore.loadConfig(record)"
               >
@@ -146,6 +153,9 @@ import { onMounted, ref } from 'vue'
 import { useHistoryStore } from '../stores/historyStore.js'
 import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
+import { useRelayStore } from '../stores/relayStore.js'
+import { useToastStore } from '../stores/toastStore.js'
+import { apiModeLabel } from '../api/modes.js'
 import { SCORE_VERSION } from '../utils/report.js'
 import ChannelPanel from './ChannelPanel.vue'
 
@@ -156,11 +166,45 @@ export default {
     const historyStore = useHistoryStore()
     const testStore = useTestStore()
     const channelStore = useChannelStore()
+    const relayStore = useRelayStore()
+    const toastStore = useToastStore()
     const activeTab = ref('history')
 
     const handleClear = async () => {
       if (!confirm('确定要清空所有历史记录吗？')) return
       await historyStore.clearAll()
+    }
+
+    // 把历史里的提供商一键加入中转站（中转站只说 OpenAI 协议）
+    const addToRelay = async (record) => {
+      const config = record?.config || {}
+      const mode = config.apiMode || 'openai'
+
+      if (!['openai', 'openai-like'].includes(mode)) {
+        toastStore.addToast(
+          `中转站只支持 OpenAI 兼容模式，这条记录是 ${apiModeLabel(mode)}`,
+          'error',
+        )
+        return
+      }
+      if (!config.baseUrl) {
+        toastStore.addToast('该记录缺少 Base URL', 'error')
+        return
+      }
+
+      // 没加载过就先读，避免覆盖已有的提供商列表
+      if (!relayStore.initialized) await relayStore.load()
+
+      const models = (record.result?.models || [])
+        .filter((item) => item.status === 'success')
+        .map((item) => item.model)
+
+      await relayStore.addProvider({
+        name: config.provider || config.baseUrl,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey || '',
+        models,
+      })
     }
 
     const handleDelete = async (id) => {
@@ -232,6 +276,7 @@ export default {
       handleClear,
       handleDelete,
       handleReload,
+      addToRelay,
       previousScore,
       scoreDelta,
       deltaText,

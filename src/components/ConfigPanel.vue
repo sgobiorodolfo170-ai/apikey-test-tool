@@ -180,7 +180,7 @@
       </div>
 
       <div
-        class="bg-surface-alt border border-border-light rounded-input px-3 py-2 min-h-[240px] max-h-[240px] overflow-y-auto"
+        class="bg-surface-alt border border-border-light rounded-input px-3 py-2 min-h-[180px] max-h-[180px] overflow-y-auto"
       >
         <div v-if="testStore.isFetchingModels" class="text-text-muted text-sm">
           正在获取模型列表...
@@ -346,6 +346,11 @@
         </button>
       </div>
     </Teleport>
+
+    <div class="mt-4 pt-3 border-t border-border flex-shrink-0 flex flex-col h-64">
+      <div class="text-sm font-semibold text-text-primary mb-2 flex-shrink-0">测试结果</div>
+      <ResultPanel />
+    </div>
   </div>
 </template>
 
@@ -353,6 +358,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
+import ResultPanel from './ResultPanel.vue'
 import { useUpdateStore } from '../stores/updateStore.js'
 import { useToastStore } from '../stores/toastStore.js'
 import { API_MODES, apiModeNeedsKey } from '../api/modes.js'
@@ -360,6 +366,7 @@ import { readProviders, readProviderSettings, readHistory } from '../utils/stora
 
 export default {
   name: 'ConfigPanel',
+  components: { ResultPanel },
   setup() {
     const testStore = useTestStore()
     const channelStore = useChannelStore()
