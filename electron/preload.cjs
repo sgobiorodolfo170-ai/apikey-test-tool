@@ -36,6 +36,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 用系统浏览器打开外部链接（主进程会校验域名）
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
+  // 中转站：本地 OpenAI 兼容聚合端点
+  relay: {
+    start: (config) => ipcRenderer.invoke('relay-start', config),
+    stop: () => ipcRenderer.invoke('relay-stop'),
+    status: () => ipcRenderer.invoke('relay-status'),
+    update: (config) => ipcRenderer.invoke('relay-update', config),
+    fetchModels: (payload) => ipcRenderer.invoke('relay-models', payload),
+    logs: () => ipcRenderer.invoke('relay-logs'),
+    clearLogs: () => ipcRenderer.invoke('relay-clear-logs'),
+  },
+
   // 密钥加密存储（Electron safeStorage）
   secureStore: (op, data) => ipcRenderer.invoke('secure-store', op, data),
   secureAvailable: () => ipcRenderer.invoke('secure-available'),

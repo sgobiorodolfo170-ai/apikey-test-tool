@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
+const relay = require('./relay.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
 if (process.env.APKEY_USER_DATA_DIR) {
@@ -48,6 +49,13 @@ const ipcHandlers = [
   'http-stream',
   'run-code',
   'open-external',
+  'relay-start',
+  'relay-stop',
+  'relay-status',
+  'relay-update',
+  'relay-models',
+  'relay-logs',
+  'relay-clear-logs',
   'http-abort',
   'secure-store',
   'secure-available',
@@ -834,6 +842,44 @@ async function handleOpenExternal(url) {
 
 ipcMain.handle('open-external', async (event, url) => {
   return handleOpenExternal(url)
+})
+
+// ---------- 中转站（本地 OpenAI 兼容聚合端点） ----------
+ipcMain.handle('relay-start', async (event, config) => {
+  try {
+    const info = await relay.start(config)
+    return { ok: true, ...info, status: relay.getStatus() }
+  } catch (error) {
+    const hint = error.code === 'EADDRINUSE' ? `端口 ${config?.port} 已被占用` : error.message
+    return { ok: false, error: hint }
+  }
+})
+
+ipcMain.handle('relay-stop', async () => {
+  relay.stop()
+  return { ok: true, status: relay.getStatus() }
+})
+
+ipcMain.handle('relay-status', async () => ({ ok: true, status: relay.getStatus() }))
+
+ipcMain.handle('relay-update', async (event, config) => ({
+  ok: true,
+  status: relay.update(config),
+}))
+
+ipcMain.handle('relay-logs', async () => ({ ok: true, logs: relay.getLogs() }))
+
+ipcMain.handle('relay-clear-logs', async () => {
+  relay.clearLogs()
+  return { ok: true, logs: [] }
+})
+
+ipcMain.handle('relay-models', async (event, payload) => {
+  try {
+    return { ok: true, models: await relay.fetchModels(payload) }
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
 })
 
 ipcMain.handle('http-abort', async (event, requestId) => {

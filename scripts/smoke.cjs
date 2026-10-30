@@ -72,6 +72,30 @@ function startServer(httpPort) {
         return
       }
 
+      if (req.url.startsWith('/bad')) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end('{"error":{"message":"boom"}}')
+        return
+      }
+
+      if (req.url === '/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'smoke-model' }] }))
+        return
+      }
+
+      if (req.url === '/chat/completions') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl-smoke',
+            auth: req.headers.authorization || '',
+            choices: [{ message: { role: 'assistant', content: 'relay-ok' } }],
+          }),
+        )
+        return
+      }
+
       if (req.url === '/sse') {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -240,6 +264,120 @@ function buildExpression(httpPort) {
       check('secure storage', enc.encrypted ? cipher.startsWith('enc:') && plain === 'sk-smoke' : plain === 'sk-smoke', { encrypted: enc.encrypted })
     } catch (e) {
       check('secure storage', false, String(e))
+    }
+
+    try {
+      const started = await api.relay.start({
+        port: 0,
+        providers: [
+          {
+            id: 'smoke',
+            name: 'smoke',
+            baseUrl: 'http://127.0.0.1:${httpPort}',
+            apiKey: 'sk-smoke',
+            models: ['smoke-model'],
+            enabled: true,
+          },
+        ],
+      })
+      check('relay start', started.ok === true && started.port > 0, started)
+
+      const models = await (await fetch(started.baseUrl + '/models')).json()
+      check('relay models', models.data?.[0]?.id === 'smoke-model', models)
+
+      const completion = await (
+        await fetch(started.baseUrl + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'smoke-model', messages: [{ role: 'user', content: 'hi' }] }),
+        })
+      ).json()
+      check(
+        'relay forward',
+        completion.choices?.[0]?.message?.content === 'relay-ok' &&
+          completion.auth === 'Bearer sk-smoke',
+        completion,
+      )
+
+      await api.relay.stop()
+
+      // 故障转移：第一个上游 500，应自动切到第二个
+      const failover = await api.relay.start({
+        port: 0,
+        providers: [
+          {
+            id: 'bad',
+            name: '坏上游',
+            baseUrl: 'http://127.0.0.1:${httpPort}/bad',
+            apiKey: 'sk-bad',
+            models: ['smoke-model'],
+            enabled: true,
+          },
+          {
+            id: 'good',
+            name: '好上游',
+            baseUrl: 'http://127.0.0.1:${httpPort}',
+            apiKey: 'sk-good',
+            models: ['smoke-model'],
+            enabled: true,
+          },
+        ],
+      })
+
+      const foResponse = await fetch(failover.baseUrl + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'smoke-model', messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      const foBody = await foResponse.json()
+      check(
+        'relay failover',
+        foResponse.status === 200 &&
+          foBody.choices?.[0]?.message?.content === 'relay-ok' &&
+          decodeURIComponent(foResponse.headers.get('x-relay-provider') || '') === '好上游',
+        { status: foResponse.status, provider: foResponse.headers.get('x-relay-provider') },
+      )
+
+      // 限流：每分钟 1 次，第二次应被 429 拦下
+      const limited = await api.relay.start({
+        port: 0,
+        providers: [
+          {
+            id: 'rl',
+            name: '限速上游',
+            baseUrl: 'http://127.0.0.1:${httpPort}',
+            apiKey: 'sk-rl',
+            models: ['smoke-model'],
+            enabled: true,
+            rpmLimit: 1,
+          },
+        ],
+      })
+      const req = () =>
+        fetch(limited.baseUrl + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'smoke-model', messages: [{ role: 'user', content: 'hi' }] }),
+        })
+      const firstCall = await req()
+      const secondCall = await req()
+      check(
+        'relay rate limit',
+        firstCall.status === 200 && secondCall.status === 429,
+        { first: firstCall.status, second: secondCall.status },
+      )
+      await api.relay.stop()
+
+      const logs = await api.relay.logs()
+      check(
+        'relay logs',
+        logs.ok === true && logs.logs.some((l) => l.provider === '坏上游' && l.status === 500),
+        { total: logs.logs?.length },
+      )
+
+      await api.relay.stop()
+    } catch (e) {
+      check('relay start', false, String(e))
     }
 
     try {

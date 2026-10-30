@@ -1,6 +1,7 @@
 const HISTORY_FILE = 'history.json'
 const PROVIDERS_FILE = 'providers.json'
 const CHANNELS_FILE = 'channels.json'
+const RELAY_FILE = 'relay.json'
 
 let userDataPath = null
 
@@ -180,6 +181,29 @@ export async function deleteChannel(id) {
     const next = list.filter((item) => item.id !== id)
     await writeJsonFile(CHANNELS_FILE, next)
     return next
+  })
+}
+
+// ---------- 中转站配置 ----------
+const DEFAULT_RELAY = { port: 8787, providers: [] }
+
+export async function readRelay() {
+  const config = await readJsonFile(RELAY_FILE, DEFAULT_RELAY)
+  if (!config || typeof config !== 'object') return { ...DEFAULT_RELAY }
+  return {
+    port: Number(config.port) || DEFAULT_RELAY.port,
+    providers: Array.isArray(config.providers) ? config.providers : [],
+  }
+}
+
+export async function saveRelay(config) {
+  return withFileLock(RELAY_FILE, async () => {
+    const payload = {
+      port: Number(config?.port) || DEFAULT_RELAY.port,
+      providers: Array.isArray(config?.providers) ? config.providers : [],
+    }
+    await writeJsonFile(RELAY_FILE, payload)
+    return payload
   })
 }
 

@@ -5,12 +5,14 @@ const mockStore = {
   providers: {},
   history: [],
   channels: [],
+  relay: { port: 8787, providers: [] },
   userDataPath: '/mock/user/data',
 }
 
 function fileKey(fileName) {
   if (fileName === 'providers.json') return 'providers'
   if (fileName === 'channels.json') return 'channels'
+  if (fileName === 'relay.json') return 'relay'
   return 'history'
 }
 
@@ -29,6 +31,7 @@ export function resetMockStore() {
   mockStore.providers = {}
   mockStore.history = []
   mockStore.channels = []
+  mockStore.relay = { port: 8787, providers: [] }
 }
 
 export function setupElectronAPIMock() {
