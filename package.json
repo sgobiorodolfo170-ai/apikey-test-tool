@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && electron-builder",
+    "build:win": "vite build && electron-builder --win",
+    "build:mac": "vite build && electron-builder --mac",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron . --dev\"",
     "pack": "vite build && electron-builder",
@@ -82,6 +84,27 @@
         }
       ],
       "icon": "ico/icon-256x256.png"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "ico/icon.svg",
+      "artifactName": "APIKeyTester-${version}-${arch}.${ext}"
     },
     "icon": "ico/icon-256x256.png"
   }

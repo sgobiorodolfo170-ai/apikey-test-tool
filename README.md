@@ -2,8 +2,8 @@
 
 个人使用的桌面工具：测试大模型 API Key / 渠道的连通性、速度、模型能力与稳定性，并可将多个上游聚合成一个本地 OpenAI 兼容端点。
 
-- 当前发布：Windows x64 便携版（`dist-app/`）
-- macOS：打包与平台适配在路线图最后，当前未提供安装包
+- 当前发布：Windows x64 便携版；macOS（Intel / Apple Silicon）dmg / zip
+- macOS 包需在 macOS 上构建，未做代码签名与公证
 - 无后端、无账号体系，所有数据保存在本机 `userData`
 
 ## 能做什么
@@ -21,7 +21,13 @@
 
 **Windows**：解压/运行 `dist-app/APIKey测试工具-<版本>-portable.exe`。未做代码签名，首次运行可能出现 SmartScreen 提示，选择“更多信息 → 仍要运行”。
 
-**macOS**：暂未提供安装包，见 [ROADMAP](ROADMAP.md)。
+**macOS**：打开 dmg，把应用拖入 `Applications`。未签名/未公证时首次打开需右键选择“打开”；如被隔离，可执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/APIKey测试工具.app"
+```
+
+构建说明见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)；macOS 包必须在 macOS 上执行 `npm run build:mac`。
 
 **开发模式**：
 
@@ -41,18 +47,18 @@ npm run dev            # 仅浏览器（不持久化、无 IPC 代理）
 
 ## API 模式与 Base URL
 
-| 模式 | Base URL 示例 |
-|---|---|
-| OpenAI | `https://api.openai.com/v1` |
-| OpenAI Responses | `https://api.openai.com/v1` |
-| OpenAI-like | 任意兼容服务，如 `https://api.siliconflow.cn/v1` |
-| OpenAI 图片 | `https://api.openai.com/v1`（`gpt-image-1` / `dall-e-3`） |
-| OpenAI 语音 | `https://api.openai.com/v1`（TTS / Whisper） |
-| Anthropic | `https://api.anthropic.com` |
-| Azure OpenAI | `https://{资源名}.openai.azure.com`（模型名即 deployment） |
-| Google Gemini | `https://generativelanguage.googleapis.com` |
-| Ollama | `http://localhost:11434`（无需 Key） |
-| Jev (TypeSafe) | `https://api.typesafe.ai` |
+| 模式             | Base URL 示例                                              |
+| ---------------- | ---------------------------------------------------------- |
+| OpenAI           | `https://api.openai.com/v1`                                |
+| OpenAI Responses | `https://api.openai.com/v1`                                |
+| OpenAI-like      | 任意兼容服务，如 `https://api.siliconflow.cn/v1`           |
+| OpenAI 图片      | `https://api.openai.com/v1`（`gpt-image-1` / `dall-e-3`）  |
+| OpenAI 语音      | `https://api.openai.com/v1`（TTS / Whisper）               |
+| Anthropic        | `https://api.anthropic.com`                                |
+| Azure OpenAI     | `https://{资源名}.openai.azure.com`（模型名即 deployment） |
+| Google Gemini    | `https://generativelanguage.googleapis.com`                |
+| Ollama           | `http://localhost:11434`（无需 Key）                       |
+| Jev (TypeSafe)   | `https://api.typesafe.ai`                                  |
 
 Base URL 写错时，优先检查是否需要带 `/v1`；工具会尝试 `/chat/completions` 与 `/v1/chat/completions` 两个端点。
 
@@ -71,19 +77,19 @@ Base URL 写错时，优先检查是否需要带 `/v1`；工具会尝试 `/chat/
 数据目录：
 
 - Windows：`%APPDATA%\APIKey测试工具`
-- macOS（开发模式）：`~/Library/Application Support/APIKey测试工具`
+- macOS：`~/Library/Application Support/APIKey测试工具`
 
-| 文件 | 内容 |
-|---|---|
-| `history.json` | 测试/体检历史，最多 100 条 |
-| `providers.json` | 提供商名称 → Base URL / 模式（不含 Key） |
-| `channels.json` | 渠道完整配置（含加密后的 Key） |
-| `relay.json` | 中转站配置（含加密后的上游 Key） |
-| `relay-usage.json` | 中转站日志、统计、额度事件（含 Key 尾号） |
-| `app-settings.json` | 托盘/开机自启 |
-| `window-state.json` | 窗口位置与大小 |
-| `ERROR_LOG.md` | 运行时错误日志，超过 1MB 归档为 `.1.md` |
-| `exports/` | 手动导出的体检报告 |
+| 文件                | 内容                                      |
+| ------------------- | ----------------------------------------- |
+| `history.json`      | 测试/体检历史，最多 100 条                |
+| `providers.json`    | 提供商名称 → Base URL / 模式（不含 Key）  |
+| `channels.json`     | 渠道完整配置（含加密后的 Key）            |
+| `relay.json`        | 中转站配置（含加密后的上游 Key）          |
+| `relay-usage.json`  | 中转站日志、统计、额度事件（含 Key 尾号） |
+| `app-settings.json` | 托盘/开机自启                             |
+| `window-state.json` | 窗口位置与大小                            |
+| `ERROR_LOG.md`      | 运行时错误日志，超过 1MB 归档为 `.1.md`   |
+| `exports/`          | 手动导出的体检报告                        |
 
 **Key 保护**：落盘前经主进程 `safeStorage` 加密（Windows DPAPI / macOS Keychain）。若系统不支持或加密失败，会退回明文并在控制台告警；换机/换用户后密文无法解密，需要重新输入。历史记录中包含加密后的 Key，对外分享 `history.json` 前请自行确认。
 
@@ -118,7 +124,7 @@ npm run smoke       # 真实 Electron 冒烟（需先 build）
 
 ## 已知限制
 
-- Windows 便携版无自动更新，升级需手动替换；未签名，macOS 需后续单独适配。
+- Windows 便携版无自动更新，升级需手动替换；macOS 包未签名/未公证，首次打开需右键“打开”。
 - 代码题目前只执行 JavaScript；本地沙箱仅用于诊断，不是严格安全边界。
 - 指纹匹配可被系统提示词欺骗，只作参考，不单独作为“假模型”判据。
 - 中转站只监听本机，不做公网暴露；运行中修改端口需先停止服务。

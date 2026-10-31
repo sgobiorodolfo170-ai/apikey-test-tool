@@ -1,10 +1,22 @@
-const { app, BrowserWindow, ipcMain, net, safeStorage, shell, Menu, Tray } = require('electron')
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  net,
+  safeStorage,
+  shell,
+  Menu,
+  Tray,
+  nativeImage,
+  screen,
+} = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
 const relay = require('./relay.cjs')
 const { isPathSafe: isPathInside } = require('./lib/path-safety.cjs')
+const { normalizeWindowBounds } = require('./lib/window-bounds.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
 if (process.env.APKEY_USER_DATA_DIR) {
@@ -98,12 +110,16 @@ function debounce(fn, delay) {
 function loadWindowState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
-      return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
+      const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'))
+      return {
+        ...normalizeWindowBounds(raw, screen.getAllDisplays()),
+        maximized: raw?.maximized === true,
+      }
     }
   } catch {
     // 状态文件损坏或不可读时使用默认窗口尺寸
   }
-  return { width: 1200, height: 800 }
+  return normalizeWindowBounds(null)
 }
 
 function saveWindowState() {
@@ -716,7 +732,12 @@ function refreshTrayMenu() {
 function createTray() {
   if (tray && !tray.isDestroyed()) return
   try {
-    tray = new Tray(path.join(__dirname, '../ico/icon-256x256.png'))
+    const iconPath = path.join(__dirname, '../ico/icon-256x256.png')
+    const image = nativeImage.createFromPath(iconPath)
+    // macOS 菜单栏按点数显示，256px 原图过大；Windows 保持原尺寸
+    const trayImage =
+      process.platform === 'darwin' ? image.resize({ width: 18, height: 18 }) : image
+    tray = new Tray(trayImage)
     tray.setToolTip('API Key 测试工具')
     tray.on('click', showMainWindow)
     tray.on('right-click', refreshTrayMenu)
@@ -730,8 +751,9 @@ function createTray() {
 function setAutoLaunch(enabled) {
   appSettings.autoLaunch = Boolean(enabled)
   saveAppSettings()
+  // 开发模式下 execPath 是 Electron 本体，写入登录项会把 Electron 加到开机启动
   try {
-    app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
+    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
   } catch {
     // 某些平台不支持
   }
@@ -791,7 +813,7 @@ function createWindow() {
       sandbox: true,
     },
     icon: path.join(__dirname, '../ico/icon-256x256.png'),
-    autoHideMenuBar: true,
+    autoHideMenuBar: process.platform !== 'darwin',
   })
 
   // 页面渲染完成后再显示窗口，避免启动时出现长时间白屏
@@ -947,9 +969,22 @@ function registerAppLifecycle() {
     // 恢复上次的调用日志与统计，并挂载持久化文件
     relay.attachStorage(path.join(USER_DATA_PATH, 'relay-usage.json'))
     try {
-      app.setLoginItemSettings({ openAtLogin: Boolean(appSettings.autoLaunch) })
+      if (app.isPackaged) {
+        app.setLoginItemSettings({ openAtLogin: Boolean(appSettings.autoLaunch) })
+      }
     } catch {
       // 某些平台不支持
+    }
+    // macOS 需要标准应用菜单（Cmd+Q / 隐藏 / 编辑快捷键），Windows/Linux 继续隐藏菜单栏
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate([
+          { role: 'appMenu' },
+          { role: 'editMenu' },
+          { role: 'viewMenu' },
+          { role: 'windowMenu' },
+        ]),
+      )
     }
     createWindow()
     createTray()
@@ -966,9 +1001,8 @@ function registerAppLifecycle() {
   app.on('window-all-closed', eventListeners.windowAllClosed)
 
   eventListeners.activate = () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    // macOS 点 Dock 图标：窗口可能只是隐藏到托盘，需要恢复而不是什么都不做
+    showMainWindow()
   }
   app.on('activate', eventListeners.activate)
 
