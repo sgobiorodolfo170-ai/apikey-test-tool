@@ -185,7 +185,30 @@ export async function deleteChannel(id) {
 }
 
 // ---------- 中转站配置 ----------
-const DEFAULT_RELAY = { port: 8787, providers: [] }
+const DEFAULT_RELAY = {
+  port: 8787,
+  providers: [],
+  apiKey: '',
+  clientKeys: [],
+  sticky: false,
+  autoStart: true,
+  cache: { enabled: false, ttlMs: 300000 },
+}
+
+// 多客户端 Key：每把 Key 对应一个工具 / 客户端名称，用于日志归因
+function normalizeClientKeys(input) {
+  const list = Array.isArray(input) ? input : []
+  const seen = new Set()
+  const result = []
+  for (const item of list) {
+    const key = typeof item?.key === 'string' ? item.key.trim() : ''
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const label = typeof item?.label === 'string' ? item.label.trim() : ''
+    result.push({ key, label: label || `客户端${result.length + 1}` })
+  }
+  return result
+}
 
 export async function readRelay() {
   const config = await readJsonFile(RELAY_FILE, DEFAULT_RELAY)
@@ -193,6 +216,14 @@ export async function readRelay() {
   return {
     port: Number(config.port) || DEFAULT_RELAY.port,
     providers: Array.isArray(config.providers) ? config.providers : [],
+    apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
+    clientKeys: normalizeClientKeys(config.clientKeys),
+    sticky: config.sticky === true,
+    autoStart: config.autoStart !== false,
+    cache: {
+      enabled: config.cache?.enabled === true,
+      ttlMs: Math.max(1000, Number(config.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),
+    },
   }
 }
 
@@ -201,6 +232,14 @@ export async function saveRelay(config) {
     const payload = {
       port: Number(config?.port) || DEFAULT_RELAY.port,
       providers: Array.isArray(config?.providers) ? config.providers : [],
+      apiKey: typeof config?.apiKey === 'string' ? config.apiKey : '',
+      clientKeys: normalizeClientKeys(config?.clientKeys),
+      sticky: config?.sticky === true,
+      autoStart: config?.autoStart !== false,
+      cache: {
+        enabled: config?.cache?.enabled === true,
+        ttlMs: Math.max(1000, Number(config?.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),
+      },
     }
     await writeJsonFile(RELAY_FILE, payload)
     return payload

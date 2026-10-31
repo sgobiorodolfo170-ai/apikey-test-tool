@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, net, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, net, safeStorage, shell, Menu, Tray } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -24,6 +24,15 @@ function isPathSafe(targetPath) {
 }
 
 let mainWindow = null
+let tray = null
+let quitting = false
+// 页面加载失败后的自动重试次数（成功后归零）
+let loadRetries = 0
+
+const RELAY_CONFIG_FILE = path.join(USER_DATA_PATH, 'relay.json')
+const APP_SETTINGS_FILE = path.join(USER_DATA_PATH, 'app-settings.json')
+const DEFAULT_APP_SETTINGS = { tray: true, autoLaunch: false }
+let appSettings = { ...DEFAULT_APP_SETTINGS }
 
 const LOG_FILE = 'ERROR_LOG.md'
 const STATE_FILE = path.join(app.getPath('userData'), 'window-state.json')
@@ -56,6 +65,8 @@ const ipcHandlers = [
   'relay-models',
   'relay-logs',
   'relay-clear-logs',
+  'relay-stats',
+  'relay-stats-clear',
   'http-abort',
   'secure-store',
   'secure-available',
@@ -609,6 +620,173 @@ async function handleRunCode(payload) {
   }
 }
 
+function loadAppSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(APP_SETTINGS_FILE, 'utf8'))
+    return { ...DEFAULT_APP_SETTINGS, ...raw }
+  } catch {
+    return { ...DEFAULT_APP_SETTINGS }
+  }
+}
+
+function saveAppSettings() {
+  try {
+    fs.writeFileSync(APP_SETTINGS_FILE, JSON.stringify(appSettings))
+  } catch {
+    // 忽略
+  }
+}
+
+function readRelayConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(RELAY_CONFIG_FILE, 'utf8'))
+    // 新版文件是 { version, data } 包装；旧版直接是配置对象
+    if (raw && raw.data && typeof raw.data === 'object') return raw.data
+    return raw
+  } catch {
+    return null
+  }
+}
+
+function isDevToolsWindow(win) {
+  if (!win || win.isDestroyed() || win === mainWindow) return false
+  return String(win.webContents?.getURL() || '').startsWith('devtools://')
+}
+
+// 独立 DevTools 窗口可能置顶并抢焦点，导致主窗口点不进来：取消置顶、不占任务栏后把主窗口置前
+function releaseDevToolsOverlay() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!isDevToolsWindow(win)) continue
+    win.setAlwaysOnTop(false)
+    win.setSkipTaskbar(true)
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.moveTop()
+}
+
+function openDevToolsDetached() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.openDevTools({ mode: 'detach' })
+  // DevTools 窗口是异步创建的，出现后再解除置顶，并把焦点还给主窗口
+  setTimeout(releaseDevToolsOverlay, 600)
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+  }, 700)
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.moveTop()
+  mainWindow.focus()
+  releaseDevToolsOverlay()
+}
+
+function refreshTrayMenu() {
+  if (!tray || tray.isDestroyed()) return
+  const status = relay.getStatus()
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '显示主窗口', click: showMainWindow },
+      { type: 'separator' },
+      {
+        label: '启动中转站',
+        enabled: !status.running,
+        click: () => {
+          startRelayFromConfig()
+        },
+      },
+      {
+        label: '停止中转站',
+        enabled: status.running,
+        click: () => {
+          relay.stop()
+          refreshTrayMenu()
+        },
+      },
+      { type: 'separator' },
+      {
+        label: '开机自启',
+        type: 'checkbox',
+        checked: Boolean(appSettings.autoLaunch),
+        click: (item) => setAutoLaunch(item.checked),
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          quitting = true
+          app.quit()
+        },
+      },
+    ]),
+  )
+}
+
+function createTray() {
+  if (tray && !tray.isDestroyed()) return
+  try {
+    tray = new Tray(path.join(__dirname, '../ico/icon-256x256.png'))
+    tray.setToolTip('API Key 测试工具')
+    tray.on('click', showMainWindow)
+    tray.on('right-click', refreshTrayMenu)
+    refreshTrayMenu()
+  } catch (error) {
+    logError('Tray Init', error.message, null)
+    tray = null
+  }
+}
+
+function setAutoLaunch(enabled) {
+  appSettings.autoLaunch = Boolean(enabled)
+  saveAppSettings()
+  try {
+    app.setLoginItemSettings({ openAtLogin: Boolean(enabled) })
+  } catch {
+    // 某些平台不支持
+  }
+  refreshTrayMenu()
+}
+
+function startRelayFromConfig() {
+  const stored = readRelayConfig()
+  if (!stored || !Array.isArray(stored.providers) || stored.providers.length === 0) {
+    return Promise.resolve(false)
+  }
+  // apiKey 落盘时是 enc:<base64>，启动前先解密，否则上游会收到加密串
+  const decrypted = handleSecureStore('decrypt', stored)
+  const config = decrypted?.ok ? decrypted.data : stored
+  return relay
+    .start({
+      port: config.port,
+      providers: config.providers,
+      apiKey: config.apiKey,
+      clientKeys: config.clientKeys,
+      sticky: config.sticky,
+      cache: config.cache,
+    })
+    .then(() => {
+      refreshTrayMenu()
+      return true
+    })
+    .catch((error) => {
+      logError('Relay Start', error.message, null)
+      refreshTrayMenu()
+      return false
+    })
+}
+
+// 启动应用时按 relay.json 的配置自动拉起中转服务
+function autoStartRelay() {
+  const config = readRelayConfig()
+  if (!config || config.autoStart === false) return
+  if (!Array.isArray(config.providers) || config.providers.length === 0) return
+  startRelayFromConfig()
+}
+
 function createWindow() {
   const state = loadWindowState()
 
@@ -640,14 +818,59 @@ function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     logError('Renderer Process Gone', details.reason, null)
+    // 渲染进程崩溃会让窗口停在白屏，自动重载一次恢复界面（中转服务在主进程，不受影响）
+    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload()
+    }
   })
 
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    logError('Page Load Failed', `${errorCode}: ${errorDescription}`, null)
-    // 加载失败时 ready-to-show 不会触发，需手动显示窗口避免一直空白
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      mainWindow.show()
+  mainWindow.webContents.on('did-finish-load', () => {
+    loadRetries = 0
+  })
+
+  mainWindow.webContents.on(
+    'did-fail-load',
+    (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      logError('Page Load Failed', `${errorCode}: ${errorDescription}`, null)
+      // 加载失败时 ready-to-show 不会触发，需手动显示窗口避免一直空白
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+        mainWindow.show()
+      }
+      // 主框架加载失败（开发模式下 vite 还没就绪常见）时自动重试，最多两次
+      if (
+        isMainFrame &&
+        errorCode !== -3 &&
+        loadRetries < 2 &&
+        mainWindow &&
+        !mainWindow.isDestroyed()
+      ) {
+        loadRetries += 1
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload()
+        }, 800)
+      }
+    },
+  )
+
+  mainWindow.on('close', (event) => {
+    // 托盘常驻：关闭窗口只隐藏，中转服务与调用统计继续在后台跑
+    if (!quitting && appSettings.tray) {
+      event.preventDefault()
+      saveWindowState()
+      // 主窗口收进托盘时，独立的 DevTools 窗口也一起隐藏，避免只剩它浮在桌面上
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (isDevToolsWindow(win)) win.hide()
+      }
+      mainWindow.hide()
     }
+  })
+
+  // F12 切换独立 DevTools（打开时不会置顶遮挡主窗口）
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'F12') return
+    event.preventDefault()
+    if (mainWindow.webContents.isDevToolsOpened()) mainWindow.webContents.closeDevTools()
+    else openDevToolsDetached()
   })
 
   mainWindow.on('closed', () => {
@@ -661,7 +884,8 @@ function createWindow() {
 
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
     mainWindow.loadURL('http://localhost:3000')
-    mainWindow.webContents.openDevTools()
+    // 启动时打开独立 DevTools，但会解除它的置顶并把焦点还给主窗口（F12 可开关）
+    openDevToolsDetached()
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
@@ -669,6 +893,12 @@ function createWindow() {
 
 function cleanupResources() {
   console.log('正在清理资源...')
+
+  relay.stop()
+  if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = null
+  }
 
   if (mainWindow) {
     if (!mainWindow.isDestroyed()) {
@@ -723,11 +953,25 @@ function cleanupResources() {
 }
 
 function registerAppLifecycle() {
-  app.whenReady().then(createWindow)
+  app.whenReady().then(() => {
+    appSettings = loadAppSettings()
+    // 恢复上次的调用日志与统计，并挂载持久化文件
+    relay.attachStorage(path.join(USER_DATA_PATH, 'relay-usage.json'))
+    try {
+      app.setLoginItemSettings({ openAtLogin: Boolean(appSettings.autoLaunch) })
+    } catch {
+      // 某些平台不支持
+    }
+    createWindow()
+    createTray()
+    autoStartRelay()
+  })
 
   eventListeners.windowAllClosed = () => {
-    if (process.platform !== 'darwin') {
-      app.quit()
+    if (quitting || !appSettings.tray) {
+      if (process.platform !== 'darwin') {
+        app.quit()
+      }
     }
   }
   app.on('window-all-closed', eventListeners.windowAllClosed)
@@ -848,8 +1092,10 @@ ipcMain.handle('open-external', async (event, url) => {
 ipcMain.handle('relay-start', async (event, config) => {
   try {
     const info = await relay.start(config)
+    refreshTrayMenu()
     return { ok: true, ...info, status: relay.getStatus() }
   } catch (error) {
+    refreshTrayMenu()
     const hint = error.code === 'EADDRINUSE' ? `端口 ${config?.port} 已被占用` : error.message
     return { ok: false, error: hint }
   }
@@ -857,6 +1103,7 @@ ipcMain.handle('relay-start', async (event, config) => {
 
 ipcMain.handle('relay-stop', async () => {
   relay.stop()
+  refreshTrayMenu()
   return { ok: true, status: relay.getStatus() }
 })
 
@@ -872,6 +1119,13 @@ ipcMain.handle('relay-logs', async () => ({ ok: true, logs: relay.getLogs() }))
 ipcMain.handle('relay-clear-logs', async () => {
   relay.clearLogs()
   return { ok: true, logs: [] }
+})
+
+ipcMain.handle('relay-stats', async () => ({ ok: true, stats: relay.getStats() }))
+
+ipcMain.handle('relay-stats-clear', async () => {
+  relay.clearStats()
+  return { ok: true, stats: [] }
 })
 
 ipcMain.handle('relay-models', async (event, payload) => {

@@ -423,7 +423,7 @@ describe('ConfigPanel 内嵌测试结果', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('暂无测试结果')
-    // 结果区嵌在配置卡片里，不应再出现独立的 card 容器
-    expect(wrapper.findAll('.card')).toHaveLength(1)
+    // 配置面板作为历史卡片的一个选项卡，不再自带卡片外壳
+    expect(wrapper.findAll('.card')).toHaveLength(0)
   })
 })

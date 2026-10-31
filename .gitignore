@@ -31,3 +31,6 @@ dist-app-build*/
 
 # 本地工作区数据（代理记忆 / 缓存），不属于项目代码
 .workbuddy-ai/
+
+# 本地工具缓存
+.opencode/

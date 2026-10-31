@@ -1,8 +1,5 @@
 module.exports = {
-  content: [
-    "./index.html",
-    "./src/**/*.{vue,js,ts,jsx,tsx}",
-  ],
+  content: ['./index.html', './src/**/*.{vue,js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
@@ -46,6 +43,15 @@ module.exports = {
         card: '0.75rem',
         input: '0.5rem',
         btn: '0.5rem',
+      },
+      // 全局字号在上一版基础上再上调两号（+2px），行高同步
+      fontSize: {
+        xs: ['0.9375rem', { lineHeight: '1.125rem' }],
+        sm: ['1.0625rem', { lineHeight: '1.375rem' }],
+        base: ['1.1875rem', { lineHeight: '1.625rem' }],
+        lg: ['1.3125rem', { lineHeight: '1.875rem' }],
+        xl: ['1.4375rem', { lineHeight: '1.875rem' }],
+        '2xl': ['1.75rem', { lineHeight: '2.125rem' }],
       },
       boxShadow: {
         card: '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)',

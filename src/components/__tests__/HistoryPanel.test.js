@@ -79,6 +79,29 @@ describe('HistoryPanel', () => {
   it('should show clear button', () => {
     expect(wrapper.text()).toContain('清空')
   })
+
+  it('orders the tabs as 历史 / 渠道 / 中转站 / 调用监控 / 统计 / 配置', () => {
+    const labels = wrapper
+      .findAll('button')
+      .map((b) => b.text())
+      .filter((text) =>
+        ['历史', '渠道', '中转站', '调用监控', '统计', '配置'].some((label) =>
+          text.startsWith(label),
+        ),
+      )
+      .map((text) => text.replace(/\s*\(\d+\)$/, ''))
+
+    expect(labels).toEqual(['历史', '渠道', '中转站', '调用监控', '统计', '配置'])
+  })
+
+  it('switches to the relay tab', async () => {
+    const relayTab = wrapper.findAll('button').find((b) => b.text().startsWith('中转站'))
+    await relayTab.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('添加提供商')
+    expect(wrapper.text()).toContain('已停止')
+  })
 })
 
 // 落盘格式是 { version, data } 信封；未写入过时还是原始对象

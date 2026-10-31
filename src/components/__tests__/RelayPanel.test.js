@@ -54,7 +54,6 @@ describe('RelayPanel', () => {
   })
 
   it('shows the endpoint and stopped state by default', () => {
-    expect(wrapper.text()).toContain('中转站')
     expect(wrapper.text()).toContain('已停止')
     expect(wrapper.text()).toContain('http://127.0.0.1:8787/v1')
   })
@@ -78,15 +77,113 @@ describe('RelayPanel', () => {
     await flushPromises()
 
     const inputs = wrapper.findAll('input')
-    const baseUrl = inputs.find((i) => i.element.placeholder.includes('Base URL'))
+    const baseUrl = inputs.find((i) => i.element.placeholder.includes('https://'))
     expect(baseUrl.element.value).toBe('https://apihub.agnes-ai.com/v1')
+  })
+
+  it('prefills the 端砚 preset with the discovery base url', async () => {
+    await wrapper.find('select').setValue('duanyan')
+    await flushPromises()
+
+    const baseUrl = wrapper.findAll('input').find((i) => i.element.placeholder.includes('https://'))
+    expect(baseUrl.element.value).toBe('https://discovery-api.intern-ai.org.cn/v1')
+  })
+
+  it('adds key / model inputs and submits every value', async () => {
+    const addKey = wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === '增加一个 API Key 输入框')
+    await addKey.trigger('click')
+    await addKey.trigger('click')
+
+    expect(wrapper.findAll('input[type="password"]')).toHaveLength(3)
+
+    const modelInputs = () =>
+      wrapper.findAll('input').filter((i) => i.element.placeholder.startsWith('模型'))
+    expect(modelInputs()).toHaveLength(1)
+
+    const addModel = wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === '增加一个模型输入框')
+    await addModel.trigger('click')
+    expect(modelInputs()).toHaveLength(2)
+
+    await wrapper.find('input[placeholder="提供商名称"]').setValue('多Key上游')
+    await wrapper
+      .find('input[placeholder="https://api.example.com/v1"]')
+      .setValue('https://multi.example/v1')
+
+    const keys = wrapper.findAll('input[type="password"]')
+    await keys[0].setValue('sk-1')
+    await keys[1].setValue('sk-2')
+
+    await modelInputs()[0].setValue('m1')
+    await modelInputs()[1].setValue('m2')
+
+    const submit = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
+    await submit.trigger('click')
+    await flushPromises()
+
+    expect(store.providers).toHaveLength(1)
+    expect(store.providers[0].apiKeys).toEqual(['sk-1', 'sk-2'])
+    expect(store.providers[0].apiKey).toBe('sk-1')
+    expect(store.providers[0].models).toEqual(['m1', 'm2'])
+  })
+
+  it('edits an existing provider and saves added keys / models', async () => {
+    await store.addProvider({ name: 'A', baseUrl: 'https://a', apiKeys: ['k1'], models: ['m1'] })
+    await flushPromises()
+
+    const editButton = wrapper.findAll('button').find((b) => b.text() === '编辑')
+    await editButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('编辑提供商')
+    expect(wrapper.find('input[placeholder="提供商名称"]').element.value).toBe('A')
+
+    const addKey = wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === '增加一个 API Key 输入框')
+    await addKey.trigger('click')
+    const addModel = wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === '增加一个模型输入框')
+    await addModel.trigger('click')
+
+    const keys = wrapper.findAll('input[type="password"]')
+    await keys[1].setValue('k2')
+    const models = wrapper.findAll('input').filter((i) => i.element.placeholder.startsWith('模型'))
+    await models[1].setValue('m2')
+
+    const save = wrapper.findAll('button').find((b) => b.text() === '保存修改')
+    await save.trigger('click')
+    await flushPromises()
+
+    expect(store.providers).toHaveLength(1)
+    expect(store.providers[0].apiKeys).toEqual(['k1', 'k2'])
+    expect(store.providers[0].models).toEqual(['m1', 'm2'])
+    expect(store.providers[0].apiKey).toBe('k1')
+  })
+
+  it('submits model aliases from the form', async () => {
+    await wrapper.find('input[placeholder="提供商名称"]').setValue('A')
+    await wrapper.find('input[placeholder="https://api.example.com/v1"]').setValue('https://a/v1')
+    const aliasInput = wrapper.find('input[placeholder="客户端模型名=上游真实模型"]')
+    await aliasInput.setValue('my-model=gpt-4o')
+
+    const submit = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
+    await submit.trigger('click')
+    await flushPromises()
+
+    expect(store.providers).toHaveLength(1)
+    expect(store.providers[0].modelAliases).toEqual({ 'my-model': 'gpt-4o' })
   })
 
   it('adds a provider from the form', async () => {
     await wrapper.find('select').setValue('sensenova')
     await flushPromises()
 
-    const addButton = wrapper.findAll('button').find((b) => b.text() === '添加')
+    const addButton = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
     await addButton.trigger('click')
     await flushPromises()
 
@@ -95,16 +192,42 @@ describe('RelayPanel', () => {
     expect(wrapper.text()).toContain('商汤日日新')
   })
 
-  it('fetches models for a provider', async () => {
+  it('prefills the 商汤 preset with the token base url', async () => {
+    await wrapper.find('select').setValue('sensenova')
+    await flushPromises()
+
+    const baseUrl = wrapper.findAll('input').find((i) => i.element.placeholder.includes('https://'))
+    expect(baseUrl.element.value).toBe('https://token.sensenova.cn/v1')
+  })
+
+  it('pulls models into the picker and inserts the chosen one', async () => {
     await store.addProvider({ name: 'A', baseUrl: 'https://a/v1' })
     await flushPromises()
 
-    const fetchButton = wrapper.findAll('button').find((b) => b.text() === '拉取模型')
-    await fetchButton.trigger('click')
+    const editButton = wrapper.findAll('button').find((b) => b.text() === '编辑')
+    await editButton.trigger('click')
+    await flushPromises()
+
+    const pickerButton = wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === '从上游拉取模型并选择一个')
+    await pickerButton.trigger('click')
     await flushPromises()
 
     expect(window.electronAPI.relay.fetchModels).toHaveBeenCalled()
-    expect(store.providers[0].models).toEqual(['m1', 'm2'])
+
+    const options = [...document.body.querySelectorAll('button')].filter(
+      (b) => b.textContent.trim() === 'm1',
+    )
+    expect(options.length).toBeGreaterThan(0)
+    options[0].click()
+    await flushPromises()
+
+    const save = wrapper.findAll('button').find((b) => b.text() === '保存修改')
+    await save.trigger('click')
+    await flushPromises()
+
+    expect(store.providers[0].models).toEqual(['m1'])
   })
 
   it('shows the empty hint when no provider is configured', () => {
@@ -215,5 +338,57 @@ describe('RelayPanel 限流展示', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('不限速')
+  })
+
+  it('toggles session stickiness', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useRelayStore()
+    const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    const label = wrapper.findAll('label').find((item) => item.text().includes('会话粘性'))
+    expect(label).toBeTruthy()
+
+    await label.find('input[type="checkbox"]').setValue(true)
+    await flushPromises()
+
+    expect(store.sticky).toBe(true)
+    expect(label.find('input[type="checkbox"]').element.checked).toBe(true)
+  })
+
+  it('adds a client key and lists it', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useRelayStore()
+    const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find((item) => item.text() === '+ 添加客户端')
+    expect(button).toBeTruthy()
+
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(store.clientKeys).toHaveLength(1)
+    expect(wrapper.text()).toContain(store.clientKeys[0].key)
+    expect(wrapper.text()).toContain('已设 1 个')
+  })
+
+  it('applies preset quota and shows the 5h / 7d limits', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.find('select').setValue('sensenova')
+    await flushPromises()
+
+    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('额度窗口'))
+    expect(quotaLabel).toBeTruthy()
+    expect(quotaLabel.find('input[type="checkbox"]').element.checked).toBe(true)
+    const numbers = wrapper.findAll('input[type="number"]').map((item) => item.element.value)
+    expect(numbers).toContain('1500')
+    expect(numbers).toContain('15000')
   })
 })

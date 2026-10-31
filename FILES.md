@@ -14,7 +14,6 @@ apikey-test-tool/
 ├── index.html                # 渲染进程入口（含 CSP）
 ├── README.md
 ├── FILES.md                  # 本文件
-├── ERROR_LOG.md              # 运行时错误日志模板（实际写入 userData）
 ├── .github/workflows/ci.yml  # CI：lint → format:check → test
 ├── .husky/pre-commit         # 提交前 lint-staged
 │
@@ -24,7 +23,7 @@ apikey-test-tool/
 │
 ├── src/
 │   ├── main.js               # Vue 入口（Pinia + style.css）
-│   ├── App.vue               # 主组件：vue-grid-layout 卡片布局、图钉固定、等比缩放
+│   ├── App.vue               # 主组件：vue-grid-layout 卡片布局、图钉固定、分割线调宽、等比缩放
 │   ├── style.css             # 全局样式与组件类（card / input / btn-*）
 │   │
 │   ├── api/                  # 协议适配层
@@ -46,12 +45,14 @@ apikey-test-tool/
 │   │   └── checkup.js        # 一键体检编排：连通→模型→测速→指纹→能力→稳定性→报告
 │   │
 │   ├── components/
-│   │   ├── ConfigPanel.vue   # 配置：提供商、Base URL、API Key（遮蔽）、模型列表
+│   │   ├── ConfigPanel.vue   # 配置（历史卡片的「配置」选项卡）：提供商、Base URL、API Key（遮蔽）、模型列表
 │   │   ├── ResultPanel.vue   # 连接结果与模型速率
-│   │   ├── HistoryPanel.vue  # 历史记录
+│   │   ├── HistoryPanel.vue  # 历史记录卡片（历史 / 渠道 / 中转站 / 调用监控 / 统计 / 配置选项卡）
 │   │   ├── ChannelPanel.vue  # 渠道列表（切换 / 体检 / 删除）
 │   │   ├── ChannelCompare.vue# 渠道对比浮层
-│   │   ├── RelayPanel.vue    # 中转站卡片
+│   │   ├── RelayPanel.vue    # 中转站（嵌入历史卡片的中转站选项卡）
+│   │   ├── RelayStatsPanel.vue# 调用监控（按 request_id 汇总调用 / 成功率 / 故障转移 / 用量 / 客户端）
+│   │   ├── RelayUsagePanel.vue# 统计（按 Key / 模型汇总 token 用量）
 │   │   ├── ChatEvalPanel.vue # 聊天 + 测评合并卡片（选项卡）
 │   │   ├── EvalPanel.vue     # 指纹匹配 / 能力测评
 │   │   ├── ChatPanel.vue     # 聊天测试（流式渲染 + 停止）
@@ -125,7 +126,7 @@ SSE 与 NDJSON 解析器、存储层（加密/并发/失败）、判分与稳定
 - [x] 多渠道管理（保存 / 切换 / 单渠道体检 / 删除）
 - [x] 渠道横向对比（综合分/能力/稳定性/一致性并排、最优最低标记、复制 Markdown）
 - [x] 版本显示与更新检查（仅在有新版本时显示更新按钮）
-- [x] 中转站：本地 OpenAI 兼容端点 + 多上游路由 + 流式透传 + 故障转移 + 限流并发 + 请求日志
+- [x] 中转站：本地 OpenAI 兼容端点 + 多上游路由 + 流式透传 + 故障转移 + 限流并发 + 请求日志 + 会话粘性 + 多客户端 Key 归因 + 流式并发隔离 + 额度窗口（5h / 7d，含 429 多次确认）
 - [x] 对话发图（压缩 + 五种协议多模态适配 + 模式能力校验）
 - [x] 模型列表搜索与批量测试
 - [x] 聊天测试（6 种模式支持流式，可中途停止）

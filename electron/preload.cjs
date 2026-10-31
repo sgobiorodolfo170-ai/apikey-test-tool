@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     fetchModels: (payload) => ipcRenderer.invoke('relay-models', payload),
     logs: () => ipcRenderer.invoke('relay-logs'),
     clearLogs: () => ipcRenderer.invoke('relay-clear-logs'),
+    stats: () => ipcRenderer.invoke('relay-stats'),
+    clearStats: () => ipcRenderer.invoke('relay-stats-clear'),
   },
 
   // 密钥加密存储（Electron safeStorage）

@@ -1,7 +1,7 @@
 <template>
   <div class="card p-6 flex flex-col h-full w-full">
     <div class="flex items-center justify-between border-b border-border pb-2 mb-3 flex-shrink-0">
-      <div class="flex gap-1">
+      <div class="flex flex-wrap gap-1">
         <button
           type="button"
           class="px-2.5 py-1 text-sm rounded-card transition-colors"
@@ -25,6 +25,54 @@
           @click="activeTab = 'channels'"
         >
           渠道 ({{ channelStore.count }})
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
+            activeTab === 'relay'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'relay'"
+        >
+          中转站 ({{ relayStore.providers.length }})
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
+            activeTab === 'stats'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'stats'"
+        >
+          调用监控 ({{ requestCount }})
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
+            activeTab === 'usage'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'usage'"
+        >
+          统计
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
+            activeTab === 'config'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'config'"
+        >
+          配置
         </button>
       </div>
       <button
@@ -144,12 +192,16 @@
       </div>
     </template>
 
-    <ChannelPanel v-else />
+    <ChannelPanel v-else-if="activeTab === 'channels'" />
+    <RelayPanel v-else-if="activeTab === 'relay'" />
+    <RelayStatsPanel v-else-if="activeTab === 'stats'" />
+    <RelayUsagePanel v-else-if="activeTab === 'usage'" />
+    <ConfigPanel v-else />
   </div>
 </template>
 
 <script>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useHistoryStore } from '../stores/historyStore.js'
 import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
@@ -158,10 +210,14 @@ import { useToastStore } from '../stores/toastStore.js'
 import { apiModeLabel } from '../api/modes.js'
 import { SCORE_VERSION } from '../utils/report.js'
 import ChannelPanel from './ChannelPanel.vue'
+import RelayPanel from './RelayPanel.vue'
+import RelayStatsPanel from './RelayStatsPanel.vue'
+import RelayUsagePanel from './RelayUsagePanel.vue'
+import ConfigPanel from './ConfigPanel.vue'
 
 export default {
   name: 'HistoryPanel',
-  components: { ChannelPanel },
+  components: { ChannelPanel, RelayPanel, RelayStatsPanel, RelayUsagePanel, ConfigPanel },
   setup() {
     const historyStore = useHistoryStore()
     const testStore = useTestStore()
@@ -169,6 +225,9 @@ export default {
     const relayStore = useRelayStore()
     const toastStore = useToastStore()
     const activeTab = ref('history')
+    const requestCount = computed(
+      () => new Set(relayStore.logs.map((item) => item.requestId).filter(Boolean)).size,
+    )
 
     const handleClear = async () => {
       if (!confirm('确定要清空所有历史记录吗？')) return
@@ -266,13 +325,20 @@ export default {
       if (!historyStore.initialized && !historyStore.loading) {
         historyStore.loadHistory()
       }
+      // 中转站与历史同卡，标签上的提供商数量需要先读一次配置
+      if (!relayStore.initialized && !relayStore.loading) {
+        relayStore.load()
+      }
+      relayStore.loadLogs()
     })
 
     return {
       historyStore,
       testStore,
       channelStore,
+      relayStore,
       activeTab,
+      requestCount,
       handleClear,
       handleDelete,
       handleReload,

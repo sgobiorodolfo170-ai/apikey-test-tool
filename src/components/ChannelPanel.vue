@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col h-full min-h-0">
     <div class="flex items-center justify-between mb-2 flex-shrink-0">
-      <span class="text-[11px] text-text-muted">
+      <span class="text-[14px] text-text-muted">
         {{ channelStore.count }} 条渠道<span v-if="rows.length"> · {{ rows.length }} 条有体检</span>
       </span>
       <button
@@ -50,7 +50,7 @@
               {{ lastCheckup(channel).score }}
             </div>
             <div v-else class="text-xs text-text-muted">未体检</div>
-            <div v-if="lastCheckup(channel)" class="text-[10px] text-text-muted">
+            <div v-if="lastCheckup(channel)" class="text-[13px] text-text-muted">
               {{ shortTime(lastCheckup(channel).at) }}
             </div>
           </div>
@@ -77,7 +77,7 @@
           </button>
         </div>
 
-        <div v-if="checkingId === channel.id" class="text-[11px] text-text-muted mt-1 truncate">
+        <div v-if="checkingId === channel.id" class="text-[14px] text-text-muted mt-1 truncate">
           {{ evalStore.checkup.progress.label }}
           ({{ Math.min(evalStore.checkup.progress.index + 1, evalStore.checkup.progress.total) }}/{{
             evalStore.checkup.progress.total
@@ -88,7 +88,7 @@
 
     <div
       v-if="channelStore.channels.length > 0"
-      class="text-[11px] text-text-muted mt-2 flex-shrink-0"
+      class="text-[14px] text-text-muted mt-2 flex-shrink-0"
     >
       分数为最近一次体检结果
     </div>

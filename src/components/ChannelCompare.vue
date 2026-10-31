@@ -49,18 +49,18 @@
                   </span>
                   <span
                     v-if="index === 0 && rows.length > 1"
-                    class="text-[10px] px-1.5 py-0.5 rounded-full bg-success/15 text-success"
+                    class="text-[13px] px-1.5 py-0.5 rounded-full bg-success/15 text-success"
                   >
                     最优
                   </span>
                   <span
                     v-if="index === rows.length - 1 && rows.length > 1"
-                    class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger/15 text-danger"
+                    class="text-[13px] px-1.5 py-0.5 rounded-full bg-danger/15 text-danger"
                   >
                     最低
                   </span>
                 </div>
-                <div class="text-[11px] text-text-muted truncate max-w-[220px]">
+                <div class="text-[14px] text-text-muted truncate max-w-[220px]">
                   {{ modeLabel(row.apiMode) }}<span v-if="row.model"> · {{ row.model }}</span>
                 </div>
               </td>
@@ -85,7 +85,7 @@
         </p>
       </div>
 
-      <div class="px-4 pb-3 text-[11px] text-text-muted flex-shrink-0">
+      <div class="px-4 pb-3 text-[14px] text-text-muted flex-shrink-0">
         综合分口径 v{{ scoreVersion }}：能力 55% + 稳定性 30% + 一致性
         15%；不同版本的分数不可直接比较
       </div>

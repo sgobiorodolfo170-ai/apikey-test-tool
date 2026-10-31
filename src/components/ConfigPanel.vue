@@ -1,15 +1,14 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full overflow-y-auto" @scroll="closeDropdowns">
-    <div class="flex items-center justify-between border-b border-border pb-2">
+  <div class="flex-1 min-h-0 w-full overflow-y-auto flex flex-col" @scroll="closeDropdowns">
+    <div class="flex items-center justify-between border-b border-border pb-2 flex-shrink-0">
       <div class="flex items-center gap-2">
-        <h2 class="text-xl font-bold text-text-primary">配置</h2>
-        <span class="text-[11px] text-text-muted leading-none"
+        <span class="text-[14px] text-text-muted leading-none"
           >v{{ updateStore.currentVersion }}</span
         >
         <button
           v-if="updateStore.hasUpdate"
           type="button"
-          class="text-[11px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 leading-none"
+          class="text-[14px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 leading-none"
           :title="`发现新版本 v${updateStore.latestVersion}，点击查看发布页`"
           @click="openReleasePage"
         >

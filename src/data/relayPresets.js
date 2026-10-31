@@ -5,18 +5,47 @@ export const RELAY_PRESETS = [
   {
     id: 'sensenova',
     name: '商汤日日新',
-    baseUrl: 'https://api.sensenova.cn/compatible-mode/v1',
-    models: ['SenseChat-5', 'SenseNova-V6-Pro'],
+    baseUrl: 'https://token.sensenova.cn/v1',
+    models: [
+      'sensenova-6.8-flash-lite',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'deepseek-flash',
+      'glm-5.2',
+      'kimi-k3',
+    ],
+    // Token Plan 公测按积分计（12 万积分 / 滚动 5 小时、120 万 / 滚动周，Flash-Lite 另有独立积分池）；
+    // 积分与 token 无公开换算，这里按官方 FAQ 的「1500 次 / 5 小时」近似，可改成「按积分」并填换算率
+    quota: {
+      enabled: true,
+      metric: 'request',
+      limit5h: 1500,
+      limitWeek: 15000,
+      creditsPerMillionTokens: 0,
+      confirmStrikes: 3,
+      confirmIntervalMinutes: 1,
+    },
     docs: 'https://platform.sensenova.cn/docs',
-    note: '兼容模式，需在控制台开通',
+    note: 'Base URL / Bearer 鉴权 / 模型 ID 与官方一致；Token Plan 积分制（12 万 / 5h、120 万 / 周，滚动窗口）。中转站里每把 Key 是独立账号，额度按 Key 分别计算；默认按 1500 次/5h 近似，可改成按积分',
   },
   {
     id: 'duanyan',
     name: '书生·端砚',
-    baseUrl: 'https://api.intern-ai.org.cn/v1',
+    baseUrl: 'https://discovery-api.intern-ai.org.cn/v1',
     models: [],
+    rpmLimit: 50,
+    // 墨点计划：5 小时最多 10 墨点、7 天最多 50 墨点，所有 Key 共享；这里按 4 墨点/百万 tokens 保守估算
+    quota: {
+      enabled: true,
+      metric: 'credit',
+      limit5h: 10,
+      limitWeek: 50,
+      creditsPerMillionTokens: 4,
+      confirmStrikes: 3,
+      confirmIntervalMinutes: 1,
+    },
     docs: 'https://discovery.intern-ai.org.cn/token-plan/home',
-    note: '地址以平台 Token Plan 页为准，建议拉取模型确认',
+    note: '墨点 5h≤10 / 7d≤50；中转站里每把 Key 是独立账号，额度与 50 RPM 都按 Key 分别计算（若同一账号下多 Key 共享，则按官方口径共享）。模型 ID 请用「拉取模型」确认',
   },
   {
     id: 'agnes',
