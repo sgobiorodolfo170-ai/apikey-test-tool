@@ -73,6 +73,21 @@ describe('evalApi fingerprint', () => {
     expect(result.incompleteCount).toBeGreaterThan(0)
   })
 
+  it('should stop retrying a probe after the max attempts', async () => {
+    let calls = 0
+    mockChat(() => {
+      calls++
+      throw new Error('boom')
+    })
+    const result = await runFingerprintMatch(mockConfig, 'm', {
+      timeoutMs: 60000,
+      retryDelayMs: 0,
+    })
+
+    expect(calls).toBe(FINGERPRINT_PROBES.length * 3)
+    expect(result.incompleteCount).toBe(FINGERPRINT_PROBES.length)
+  })
+
   it('should not retry 4xx errors like 401', async () => {
     let calls = 0
     mockChat(() => {
@@ -354,5 +369,17 @@ describe('runConsistencyTest', () => {
     expect(consistencyVerdict(40, 90).label).toBe('前后矛盾')
     expect(consistencyVerdict(90, 30).label).toBe('稳定答错')
     expect(consistencyVerdict(80, 80).label).toBe('轻微抖动')
+    expect(consistencyVerdict(0, 0, 0).label).toBe('无法判定')
+  })
+
+  it('does not mislabel an all-failure run as rotation', async () => {
+    mockChat(() => {
+      throw { response: { status: 500 } }
+    })
+    const result = await runConsistencyTest(mockConfig, 'm', { rounds: 2, concurrency: 1 })
+
+    expect(result.validCount).toBe(0)
+    expect(result.failedSamples).toBeGreaterThan(0)
+    expect(result.verdict.label).toBe('无法判定')
   })
 })

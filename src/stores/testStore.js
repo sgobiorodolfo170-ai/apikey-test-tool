@@ -4,6 +4,9 @@ import { saveTestRecord, saveProvider } from '../utils/storage.js'
 import { useHistoryStore } from './historyStore.js'
 import { useToastStore } from './toastStore.js'
 
+// 连接测试只抽样测速：中转站常有 200+ 模型，全量会等待很久并消耗额度
+const MAX_CONNECTION_TEST_MODELS = 20
+
 export const useTestStore = defineStore('test', {
   state: () => ({
     isTesting: false,
@@ -116,7 +119,8 @@ export const useTestStore = defineStore('test', {
 
         let modelResults = []
         if (models && models.length > 0) {
-          modelResults = await adapter.testModels(config, models, 5)
+          const sample = models.slice(0, MAX_CONNECTION_TEST_MODELS)
+          modelResults = await adapter.testModels(config, sample, 5)
         }
 
         const successModels = modelResults.filter((m) => m.status === 'success')
@@ -136,6 +140,9 @@ export const useTestStore = defineStore('test', {
             success: successModels.length,
             failed: failedModels.length,
             avgLatency,
+            tested: modelResults.length,
+            totalModels: models.length,
+            sampled: models.length > modelResults.length,
           },
           config: {
             baseUrl: config.baseUrl,
@@ -341,7 +348,11 @@ export const useTestStore = defineStore('test', {
           },
         }
 
-        await saveTestRecord(record)
+        const saved = await saveTestRecord(record)
+        if (!saved) {
+          toastStore.addToast('当前为浏览器预览模式，数据不会保存', 'warning')
+          return
+        }
         historyStore.refresh()
         toastStore.addToast('结果已保存', 'success')
       } catch (error) {

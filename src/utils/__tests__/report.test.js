@@ -61,6 +61,16 @@ describe('computeVerdict', () => {
     expect(verdict.scoreVersion).toBe(2)
   })
 
+  it('marks a missing required dimension as insufficient data', () => {
+    const verdict = computeVerdict(makeCheckup({ capability: null, consistency: null }))
+
+    expect(verdict.level).toBe('数据不足')
+    expect(verdict.confidence).toBe('low')
+    // 只保留稳定性 30 分，不再按剩余权重归一化成 100
+    expect(verdict.score).toBe(30)
+    expect(verdict.notes.join(' ')).toContain('缺少能力测评')
+  })
+
   it('folds consistency into the score when present', () => {
     const stable = makeCheckup({
       consistency: { agreement: 100, accuracy: 100 },

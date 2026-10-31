@@ -1,12 +1,11 @@
+import { normalizeClientKeys } from './relayConfig.js'
+
 const HISTORY_FILE = 'history.json'
 const PROVIDERS_FILE = 'providers.json'
 const CHANNELS_FILE = 'channels.json'
 const RELAY_FILE = 'relay.json'
 
 let userDataPath = null
-
-const writeQueue = new Map()
-const pendingWrites = new Set()
 
 // 同一文件的读-改-写必须串行，否则并发保存会互相覆盖（后写的读到旧数据）
 const fileLocks = new Map()
@@ -59,13 +58,42 @@ async function getFilePath(fileName) {
   return `${userDataPath}/${fileName}`
 }
 
-async function readJsonFile(fileName, defaultValue = {}) {
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+// 解析失败时不覆盖原文件：先把原始内容另存一份，便于事后恢复
+async function preserveCorruptFile(fileName, raw) {
+  if (!window.electronAPI?.writeFile || typeof raw !== 'string' || raw === '') return
+  try {
+    const filePath = await getFilePath(fileName)
+    const backupPath = filePath.replace(/\.json$/i, `.corrupt-${Date.now()}.json`)
+    await window.electronAPI.writeFile(backupPath, raw)
+  } catch (error) {
+    console.error(`备份损坏文件 ${fileName} 失败:`, error)
+  }
+}
+
+async function readJsonFile(fileName, defaultValue = {}, validate = null) {
   try {
     const filePath = await getFilePath(fileName)
     if (window.electronAPI) {
       const result = await window.electronAPI.readFile(filePath)
       if (result.success) {
-        return await unsealSecrets(normalizeData(JSON.parse(result.data)))
+        let data
+        try {
+          data = normalizeData(JSON.parse(result.data))
+        } catch (error) {
+          await preserveCorruptFile(fileName, result.data)
+          console.error(`解析${fileName}失败，已备份原文件:`, error)
+          return defaultValue
+        }
+        if (validate && !validate(data)) {
+          await preserveCorruptFile(fileName, result.data)
+          console.error(`${fileName}结构不符合预期，已备份原文件`)
+          return defaultValue
+        }
+        return await unsealSecrets(data)
       }
     }
     return defaultValue
@@ -75,35 +103,17 @@ async function readJsonFile(fileName, defaultValue = {}) {
   }
 }
 
-async function writeJsonFile(fileName, data, isRetry = false) {
-  if (!isRetry && pendingWrites.has(fileName)) {
-    writeQueue.set(fileName, data)
+async function writeJsonFile(fileName, data) {
+  const filePath = await getFilePath(fileName)
+  if (window.electronAPI) {
+    const payload = addVersion(await sealSecrets(data))
+    const result = await window.electronAPI.writeFile(filePath, JSON.stringify(payload, null, 2))
+    if (!result?.success) {
+      throw new Error(result?.error || `写入 ${fileName} 失败`)
+    }
     return true
   }
-  if (!isRetry) {
-    pendingWrites.add(fileName)
-  }
-  try {
-    const filePath = await getFilePath(fileName)
-    if (window.electronAPI) {
-      const payload = addVersion(await sealSecrets(data))
-      const result = await window.electronAPI.writeFile(filePath, JSON.stringify(payload, null, 2))
-      if (!result?.success) {
-        throw new Error(result?.error || `写入 ${fileName} 失败`)
-      }
-      return true
-    }
-    return false
-  } finally {
-    if (!isRetry) {
-      pendingWrites.delete(fileName)
-    }
-    if (!isRetry && writeQueue.has(fileName)) {
-      const queued = writeQueue.get(fileName)
-      writeQueue.delete(fileName)
-      writeJsonFile(fileName, queued, true)
-    }
-  }
+  return false
 }
 
 function addVersion(data) {
@@ -118,12 +128,12 @@ function normalizeData(raw) {
 }
 
 export async function readProviders() {
-  const providers = await readJsonFile(PROVIDERS_FILE, {})
+  const providers = await readJsonFile(PROVIDERS_FILE, {}, isPlainObject)
   return Object.keys(providers)
 }
 
 export async function readProviderSettings(providerName) {
-  const providers = await readJsonFile(PROVIDERS_FILE, {})
+  const providers = await readJsonFile(PROVIDERS_FILE, {}, isPlainObject)
   return providers[providerName] || null
 }
 
@@ -152,7 +162,7 @@ export async function deleteProvider(providerName) {
 // channels 是完整的可用配置（含加密后的 Key），用于在多条渠道间切换与对比。
 
 export async function readChannels() {
-  const list = await readJsonFile(CHANNELS_FILE, [])
+  const list = await readJsonFile(CHANNELS_FILE, [], Array.isArray)
   return Array.isArray(list) ? list : []
 }
 
@@ -192,26 +202,13 @@ const DEFAULT_RELAY = {
   clientKeys: [],
   sticky: false,
   autoStart: true,
-  cache: { enabled: false, ttlMs: 300000 },
+  cache: { enabled: false, ttlMs: 300000, maxEntries: 200 },
 }
 
-// 多客户端 Key：每把 Key 对应一个工具 / 客户端名称，用于日志归因
-function normalizeClientKeys(input) {
-  const list = Array.isArray(input) ? input : []
-  const seen = new Set()
-  const result = []
-  for (const item of list) {
-    const key = typeof item?.key === 'string' ? item.key.trim() : ''
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    const label = typeof item?.label === 'string' ? item.label.trim() : ''
-    result.push({ key, label: label || `客户端${result.length + 1}` })
-  }
-  return result
-}
+// 多客户端 Key 的归一化由 relayConfig.js 共用，避免与中转站 store / relay.cjs 口径漂移
 
 export async function readRelay() {
-  const config = await readJsonFile(RELAY_FILE, DEFAULT_RELAY)
+  const config = await readJsonFile(RELAY_FILE, DEFAULT_RELAY, isPlainObject)
   if (!config || typeof config !== 'object') return { ...DEFAULT_RELAY }
   return {
     port: Number(config.port) || DEFAULT_RELAY.port,
@@ -223,6 +220,7 @@ export async function readRelay() {
     cache: {
       enabled: config.cache?.enabled === true,
       ttlMs: Math.max(1000, Number(config.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),
+      maxEntries: Math.max(10, Number(config.cache?.maxEntries) || 200),
     },
   }
 }
@@ -239,6 +237,7 @@ export async function saveRelay(config) {
       cache: {
         enabled: config?.cache?.enabled === true,
         ttlMs: Math.max(1000, Number(config?.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),
+        maxEntries: Math.max(10, Number(config?.cache?.maxEntries) || 200),
       },
     }
     await writeJsonFile(RELAY_FILE, payload)
@@ -247,7 +246,8 @@ export async function saveRelay(config) {
 }
 
 export async function readHistory() {
-  return await readJsonFile(HISTORY_FILE, [])
+  const history = await readJsonFile(HISTORY_FILE, [], Array.isArray)
+  return Array.isArray(history) ? history : []
 }
 
 export async function writeHistory(data) {
@@ -268,8 +268,8 @@ export async function saveTestRecord(record) {
       history.splice(100)
     }
 
-    await writeJsonFile(HISTORY_FILE, history)
-    return newRecord
+    const written = await writeJsonFile(HISTORY_FILE, history)
+    return written ? newRecord : null
   })
 }
 

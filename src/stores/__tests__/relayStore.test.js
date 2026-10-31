@@ -141,7 +141,7 @@ describe('relayStore', () => {
     expect(store.autoStart).toBe(false)
     expect(saveRelay).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        cache: { enabled: true, ttlMs: 600000 },
+        cache: { enabled: true, ttlMs: 600000, maxEntries: 200 },
         autoStart: false,
       }),
     )
@@ -286,7 +286,7 @@ describe('relayStore', () => {
       apiKey: '',
       clientKeys: [],
       sticky: false,
-      cache: { enabled: false, ttlMs: 300000 },
+      cache: { enabled: false, ttlMs: 300000, maxEntries: 200 },
       providers: store.providers,
     })
     expect(store.running).toBe(true)

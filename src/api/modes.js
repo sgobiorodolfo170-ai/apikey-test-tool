@@ -174,7 +174,15 @@ const ADAPTERS = {
 }
 
 export function getApiAdapter(apiMode) {
-  return ADAPTERS[apiMode] || openAIAdapter
+  // 老配置可能没有 apiMode，历史默认就是 OpenAI；只有明确写了未知模式才报错
+  const adapter = ADAPTERS[apiMode || 'openai']
+  if (!adapter) {
+    // 以前静默回退 OpenAI，协议错配时会表现成“Key 无效/模型不存在”，很难排查
+    throw new Error(
+      `未知 API 模式：${apiMode}，可用模式：${API_MODES.map((m) => m.value).join(', ')}`,
+    )
+  }
+  return adapter
 }
 
 export function apiModeNeedsKey(apiMode) {

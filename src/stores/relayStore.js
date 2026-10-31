@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { readRelay, saveRelay } from '../utils/storage.js'
+import { normalizeQuota } from '../utils/relayConfig.js'
 import { RELAY_PRESETS } from '../data/relayPresets.js'
 import { useToastStore } from './toastStore.js'
 
@@ -25,20 +26,7 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-// 额度窗口：5 小时 / 7 天，按请求次数或积分（墨点）计量
-function normalizeQuota(input) {
-  const limit5h = Math.max(0, Number(input?.limit5h) || 0)
-  const limitWeek = Math.max(0, Number(input?.limitWeek) || 0)
-  return {
-    enabled: input?.enabled === true && (limit5h > 0 || limitWeek > 0),
-    metric: input?.metric === 'credit' ? 'credit' : 'request',
-    limit5h,
-    limitWeek,
-    creditsPerMillionTokens: Math.max(0, Number(input?.creditsPerMillionTokens) || 0),
-    confirmStrikes: Math.min(10, Math.max(0, Math.floor(Number(input?.confirmStrikes) || 0))),
-    confirmIntervalMinutes: Math.max(0, Number(input?.confirmIntervalMinutes) || 0),
-  }
-}
+// 额度窗口的归一化由 utils/relayConfig.js 共用（与 electron/relay.cjs 保持同口径）
 
 // 本地端点访问 Key：生成后客户端必须带上它
 function randomAccessKey() {
@@ -56,6 +44,7 @@ export const useRelayStore = defineStore('relay', {
     sticky: false,
     cacheEnabled: false,
     cacheTtlMinutes: 5,
+    cacheMaxEntries: 200,
     autoStart: true,
     providers: [],
     running: false,
@@ -91,6 +80,7 @@ export const useRelayStore = defineStore('relay', {
         this.sticky = config.sticky === true
         this.cacheEnabled = config.cache?.enabled === true
         this.cacheTtlMinutes = Math.max(1, Math.round((config.cache?.ttlMs || 300000) / 60000))
+        this.cacheMaxEntries = Math.max(10, Number(config.cache?.maxEntries) || 200)
         this.autoStart = config.autoStart !== false
         // 老配置没有额度窗口：按预设补上（商汤按次数、端砚按墨点），不改动用户已填的模型
         let quotaPatched = false
@@ -113,7 +103,11 @@ export const useRelayStore = defineStore('relay', {
     },
 
     async persist() {
-      const cache = { enabled: this.cacheEnabled, ttlMs: this.cacheTtlMinutes * 60000 }
+      const cache = {
+        enabled: this.cacheEnabled,
+        ttlMs: this.cacheTtlMinutes * 60000,
+        maxEntries: this.cacheMaxEntries,
+      }
       const clientKeys = plain(this.clientKeys)
       const saved = await saveRelay({
         port: this.port,
@@ -168,7 +162,11 @@ export const useRelayStore = defineStore('relay', {
         apiKey: this.apiKey,
         clientKeys: plain(this.clientKeys),
         sticky: this.sticky,
-        cache: { enabled: this.cacheEnabled, ttlMs: this.cacheTtlMinutes * 60000 },
+        cache: {
+          enabled: this.cacheEnabled,
+          ttlMs: this.cacheTtlMinutes * 60000,
+          maxEntries: this.cacheMaxEntries,
+        },
         providers: plain(this.providers),
       })
       if (!result?.ok) {
@@ -191,6 +189,10 @@ export const useRelayStore = defineStore('relay', {
     },
 
     async setPort(port) {
+      if (this.running) {
+        useToastStore().addToast('请先停止中转站，再修改端口', 'warning')
+        return
+      }
       const next = Number(port)
       if (!Number.isFinite(next) || next < 1024 || next > 65535) {
         useToastStore().addToast('端口需在 1024-65535 之间', 'warning')
@@ -320,14 +322,16 @@ export const useRelayStore = defineStore('relay', {
       await this.persist()
     },
 
-    async loadLogs() {
+    async loadLogs({ withStatus = true, skipWhenHidden = false } = {}) {
+      // 面板轮询时不重复拉 status（status 会遍历所有 provider × Key 计算额度）
+      if (skipWhenHidden && typeof document !== 'undefined' && document.hidden) return
       const api = bridge()
       if (!api?.logs) return
       this.logsLoading = true
       try {
         const result = await api.logs()
         if (result?.ok) this.logs = result.logs
-        await this.syncStatus()
+        if (withStatus) await this.syncStatus()
       } finally {
         this.logsLoading = false
       }

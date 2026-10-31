@@ -54,14 +54,27 @@ export function computeVerdict({
   const parts = []
   if (capability) parts.push({ weight: SCORE_WEIGHTS.capability, score: capability.overall })
   if (stability) parts.push({ weight: SCORE_WEIGHTS.stability, score: stability.successRate })
-  if (consistency)
+  if (consistency && consistency.validCount !== 0)
     parts.push({ weight: SCORE_WEIGHTS.consistency, score: consistencyScore(consistency) })
 
+  // 能力/稳定性是必选维度：缺失时不再按住剩余权重归一化，否则“能力没跑 + 稳定性 100”
+  // 会被算成 100 分。缺一致性可以接受，仍按已有权重归一化。
+  const missing = []
+  if (!capability) missing.push('能力测评')
+  if (!stability) missing.push('稳定性采样')
+
   const weightSum = parts.reduce((sum, p) => sum + p.weight, 0)
-  const score = weightSum
-    ? Math.round(parts.reduce((sum, p) => sum + p.score * p.weight, 0) / weightSum)
-    : 0
-  const level = scoreLevel(score)
+  const weighted = parts.reduce((sum, p) => sum + p.score * p.weight, 0)
+  const score = missing.length
+    ? Math.round(weighted)
+    : weightSum
+      ? Math.round(weighted / weightSum)
+      : 0
+  const level = missing.length ? { label: '数据不足', color: 'warning' } : scoreLevel(score)
+
+  if (missing.length) {
+    notes.push(`缺少${missing.join('、')}数据，评分仅供参考，不建议作为渠道结论`)
+  }
 
   if (capability) {
     if (capability.overall < 50) {
@@ -87,7 +100,9 @@ export function computeVerdict({
   }
 
   if (consistency) {
-    if (consistency.agreement < 60) {
+    if (consistency.validCount === 0) {
+      notes.push('一致性采样全部失败，未计入评分，建议检查网络或鉴权后再测')
+    } else if (consistency.agreement < 60) {
       notes.push(
         `一致性 ${consistency.agreement}%：同一问题答案前后不一致，疑似多模型轮换或负载分流`,
       )
@@ -118,6 +133,8 @@ export function computeVerdict({
     score,
     level: level.label,
     color: level.color,
+    confidence: missing.length ? 'low' : 'normal',
+    missing,
     scoreVersion: SCORE_VERSION,
     weights: SCORE_WEIGHTS,
     notes,
@@ -156,6 +173,10 @@ export function buildCheckupMarkdown(checkup) {
   if (verdict) {
     lines.push(`**综合评分：${verdict.score} / 100 · ${verdict.level}**`)
     lines.push('')
+    if (verdict.confidence === 'low') {
+      lines.push('> 数据不完整：缺少必选维度，评分为已采集维度的加权和，仅供参考。')
+      lines.push('')
+    }
     const version = verdict.scoreVersion || SCORE_VERSION
     lines.push(
       `> 评分口径 v${version}：能力 ${Math.round(SCORE_WEIGHTS.capability * 100)}% + 稳定性 ${Math.round(

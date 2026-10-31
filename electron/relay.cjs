@@ -12,6 +12,9 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024
 
 let server = null
+let stopPromise = null
+// 进行中的上游请求：停止服务时统一销毁，避免残留连接占用并发槽位
+const activeUpstreams = new Set()
 let config = {
   port: DEFAULT_PORT,
   providers: [],
@@ -64,6 +67,7 @@ function sameProvider(a, b) {
 }
 
 // ---------- 本地访问 Key：默认 Key + 可选的多客户端 Key（区分工具 / 便于归因） ----------
+// 与 src/utils/relayConfig.js 的 normalizeClientKeys 保持同口径
 function normalizeClientKeys(input) {
   const list = Array.isArray(input) ? input : []
   const seen = new Set()
@@ -185,6 +189,10 @@ function resolveProvidersFrom(providers = [], model) {
       Object.prototype.hasOwnProperty.call(item.modelAliases || {}, model),
   )
   if (matched.length > 0) return matched
+  // 没有任何模型列表的上游视为“通配”：用户刚添加、还没拉取模型时也能直接路由，
+  // 避免多上游场景下全部 404。明确列了模型但不匹配的上游仍不会被选中。
+  const unlisted = usable.filter((item) => !Array.isArray(item.models) || item.models.length === 0)
+  if (unlisted.length > 0) return unlisted
   if (usable.length === 1) return usable
   return []
 }
@@ -386,7 +394,7 @@ function getLogs() {
 
 function clearLogs() {
   logs.length = 0
-  persistNow()
+  return persistNow()
 }
 
 // ---------- 调用监控（按 提供商 + 模型 聚合，内存） ----------
@@ -486,7 +494,7 @@ function getStats() {
 
 function clearStats() {
   statsByKey.clear()
-  persistNow()
+  return persistNow()
 }
 
 // ---------- 持久化（日志与统计） ----------
@@ -495,6 +503,9 @@ const MAX_PERSIST_LOGS = 200
 const MAX_PERSIST_QUOTA_EVENTS = 30000
 let dataFile = null
 let persistTimer = null
+// 串行化异步写盘：避免多次 persist 互相覆盖临时文件
+let persistChain = Promise.resolve()
+let persistSeq = 0
 
 // 由主进程在 app ready 后挂载文件，启动时恢复上次的日志与统计
 function attachStorage(file) {
@@ -525,32 +536,74 @@ function attachStorage(file) {
         quotaByProvider.set(entry[0], { events: pruneQuotaEvents(events, now) })
       }
     }
+    // 额度锁同样要恢复：否则重启后被判定耗尽 5h/7d 的 Key 会继续打上游
+    if (Array.isArray(raw.locks)) {
+      quotaLocks.clear()
+      const now = Date.now()
+      for (const entry of raw.locks) {
+        if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue
+        const lock = entry[1]
+        if (!lock || !Number.isFinite(lock.until) || lock.until <= now) continue
+        quotaLocks.set(entry[0], {
+          until: lock.until,
+          level: lock.level === 'week' ? 'week' : '5h',
+          at: Number(lock.at) || now,
+        })
+      }
+    }
   } catch {
     // 首次运行或文件损坏：忽略
   }
 }
 
-function persistNow() {
-  if (!dataFile) return
+function persistNow({ sync = false } = {}) {
+  if (!dataFile) return Promise.resolve()
   if (persistTimer) {
     clearTimeout(persistTimer)
     persistTimer = null
   }
+  const quota = [...quotaByProvider.entries()]
+    .filter(([, state]) => state.events.length > 0)
+    .map(([key, state]) => [key, state.events.slice(-MAX_PERSIST_QUOTA_EVENTS)])
+  const locks = [...quotaLocks.entries()].filter(([, lock]) => lock.until > Date.now())
+  let payload
   try {
-    const quota = [...quotaByProvider.entries()]
-      .filter(([, state]) => state.events.length > 0)
-      .map(([key, state]) => [key, state.events.slice(-MAX_PERSIST_QUOTA_EVENTS)])
-    fs.writeFileSync(
-      dataFile,
-      JSON.stringify({
-        logs: logs.slice(0, MAX_PERSIST_LOGS),
-        stats: getStats(),
-        quota,
-      }),
-    )
+    payload = JSON.stringify({
+      logs: logs.slice(0, MAX_PERSIST_LOGS),
+      stats: getStats(),
+      quota,
+      locks,
+    })
   } catch {
-    // 写盘失败不影响转发
+    return Promise.resolve()
   }
+
+  const tmp = `${dataFile}.tmp-${process.pid}-${++persistSeq}`
+  // 退出时用同步写，避免异步链还没跑完进程就结束
+  if (sync) {
+    try {
+      fs.writeFileSync(tmp, payload, 'utf8')
+      fs.renameSync(tmp, dataFile)
+    } catch {
+      // 退出阶段写盘失败不再处理
+    }
+    return Promise.resolve()
+  }
+
+  persistChain = persistChain.then(async () => {
+    try {
+      await fs.promises.writeFile(tmp, payload, 'utf8')
+      await fs.promises.rename(tmp, dataFile)
+    } catch {
+      // 写盘失败不影响转发
+      try {
+        await fs.promises.unlink(tmp)
+      } catch {
+        // 临时文件可能未创建
+      }
+    }
+  })
+  return persistChain
 }
 
 function schedulePersist() {
@@ -569,6 +622,7 @@ const QUOTA_WINDOW_WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 const quotaByProvider = new Map()
 
+// 与 src/utils/relayConfig.js 的 normalizeQuota 保持同口径
 function normalizeQuota(input) {
   const metric = input?.metric === 'credit' ? 'credit' : 'request'
   const limit5h = Math.max(0, Number(input?.limit5h) || 0)
@@ -667,7 +721,10 @@ function recordQuota(provider, { status, usage }) {
     if (tokens <= 0 || quota.creditsPerMillionTokens <= 0) return
     units = (tokens * quota.creditsPerMillionTokens) / 1_000_000
   } else {
+    // 400/401/403 是请求本身或鉴权问题，429/5xx 也未被上游正常受理；
+    // 这些都不占“请求次数”额度，避免被限流后额度反而被提前耗尽
     if (status === 400 || status === 401 || status === 403) return
+    if (status === 429 || status >= 500) return
     units = 1
   }
   if (units <= 0) return
@@ -966,12 +1023,16 @@ async function attempt(provider, path, body, res, context) {
           return
         }
 
-        res.writeHead(status, {
+        const responseHeadersForClient = {
           'Content-Type': upstreamRes.headers['content-type'] || 'application/json',
           'Cache-Control': 'no-cache',
           'Access-Control-Allow-Origin': '*',
           'x-relay-provider': encodeURIComponent(provider.name || provider.id || ''),
-        })
+        }
+        if (upstreamRes.headers['retry-after']) {
+          responseHeadersForClient['Retry-After'] = upstreamRes.headers['retry-after']
+        }
+        res.writeHead(status, responseHeadersForClient)
 
         // 透传的同时留一份响应体，用来解析 usage 与写缓存（最多 2MB；超出则不缓存，避免缓存残缺响应）
         const contentType = String(upstreamRes.headers['content-type'] || '')
@@ -1073,6 +1134,9 @@ async function attempt(provider, path, body, res, context) {
     upstream.on('timeout', () => {
       upstream.destroy(new Error('上游超时'))
     })
+
+    activeUpstreams.add(upstream)
+    upstream.on('close', () => activeUpstreams.delete(upstream))
 
     upstream.on('error', (error) => {
       if (settled) return
@@ -1444,39 +1508,72 @@ function start(nextConfig = {}) {
   keyCursor.clear()
   clearCooldowns()
 
-  if (server) stop()
+  const boot = (async () => {
+    if (server || stopPromise) await stop()
+    return new Promise((resolve, reject) => {
+      const instance = http.createServer((req, res) => {
+        handle(req, res).catch((error) => {
+          if (!res.headersSent) openaiError(res, 500, error.message)
+          else res.end()
+        })
+      })
 
-  return new Promise((resolve, reject) => {
-    const instance = http.createServer((req, res) => {
-      handle(req, res).catch((error) => {
-        if (!res.headersSent) openaiError(res, 500, error.message)
-        else res.end()
+      instance.on('error', (error) => {
+        server = null
+        reject(error)
+      })
+
+      instance.listen(config.port, HOST, () => {
+        server = instance
+        // 允许传 0 让系统分配端口（测试与端口冲突时有用）
+        const actualPort = instance.address()?.port ?? config.port
+        config.port = actualPort
+        resolve({ port: actualPort, baseUrl: `http://${HOST}:${actualPort}/v1` })
       })
     })
-
-    instance.on('error', (error) => {
-      server = null
-      reject(error)
-    })
-
-    instance.listen(config.port, HOST, () => {
-      server = instance
-      // 允许传 0 让系统分配端口（测试与端口冲突时有用）
-      const actualPort = instance.address()?.port ?? config.port
-      config.port = actualPort
-      resolve({ port: actualPort, baseUrl: `http://${HOST}:${actualPort}/v1` })
-    })
-  })
+  })()
+  return boot
 }
 
 function stop() {
-  if (!server) return
-  try {
-    server.close()
-  } catch {
-    // 已关闭
-  }
+  if (stopPromise) return stopPromise
+  if (!server) return Promise.resolve()
+
+  const instance = server
   server = null
+  for (const upstream of activeUpstreams) {
+    try {
+      upstream.destroy()
+    } catch {
+      // 已关闭
+    }
+  }
+  activeUpstreams.clear()
+
+  stopPromise = new Promise((resolve) => {
+    let settled = false
+    const done = () => {
+      if (settled) return
+      settled = true
+      stopPromise = null
+      resolve()
+    }
+    try {
+      instance.close(done)
+    } catch {
+      done()
+    }
+    try {
+      // Node 18+：立即断开 keep-alive / 在途连接
+      instance.closeAllConnections?.()
+    } catch {
+      // 旧版本没有该 API
+    }
+    const timer = setTimeout(done, 1000)
+    if (timer.unref) timer.unref()
+  })
+
+  return stopPromise
 }
 
 function update(nextConfig = {}) {

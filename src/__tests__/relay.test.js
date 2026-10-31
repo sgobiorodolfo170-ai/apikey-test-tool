@@ -59,6 +59,14 @@ describe('resolveProviderFrom', () => {
     expect(relay.resolveProviderFrom(providers, 'unknown-model')).toBeNull()
   })
 
+  it('routes to providers that have no model list yet', () => {
+    const wildcard = [
+      { id: 'w', name: 'W', baseUrl: 'https://w.example.com/v1', models: [], enabled: true },
+      providers[1],
+    ]
+    expect(relay.resolveProviderFrom(wildcard, 'anything').id).toBe('w')
+  })
+
   it('never routes to a disabled provider', () => {
     expect(relay.resolveProviderFrom(providers, 'm-c')).toBeNull()
   })
@@ -615,7 +623,7 @@ describe('日志与统计持久化', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'm', messages: [] }),
     })
-    relay.persistNow()
+    await relay.persistNow()
 
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
     expect(saved.stats.length).toBeGreaterThan(0)
@@ -864,10 +872,14 @@ describe('额度窗口（5 小时 / 7 天）', () => {
     }
 
     relay.recordQuota(provider, { status: 400 })
+    relay.recordQuota(provider, { status: 429 })
+    relay.recordQuota(provider, { status: 500 })
     expect(relay.quotaBlocked(provider)).toBeNull()
 
     relay.recordQuota(provider, { status: 200 })
-    relay.recordQuota(provider, { status: 429 })
+    expect(relay.quotaBlocked(provider)).toBeNull()
+
+    relay.recordQuota(provider, { status: 200 })
     const blocked = relay.quotaBlocked(provider)
     expect(blocked.window).toBe('5h')
     expect(blocked.retryAfter).toBeGreaterThan(0)

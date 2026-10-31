@@ -29,8 +29,12 @@ describe('api modes registry', () => {
     }
   })
 
-  it('should fall back to the openai adapter for unknown modes', () => {
-    expect(getApiAdapter('unknown-mode')).toBe(getApiAdapter('openai'))
+  it('should throw for unknown modes instead of silently using openai', () => {
+    expect(() => getApiAdapter('unknown-mode')).toThrow('未知 API 模式')
+  })
+
+  it('defaults an empty mode to openai for legacy configs', () => {
+    expect(getApiAdapter()).toBe(getApiAdapter('openai'))
   })
 
   it('should reuse the openai adapter for openai-like', () => {

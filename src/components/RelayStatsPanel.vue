@@ -186,6 +186,7 @@ export default {
     })
 
     const refresh = () => relayStore.loadLogs()
+    const poll = () => relayStore.loadLogs({ withStatus: false, skipWhenHidden: true })
 
     const handleClear = async () => {
       if (!confirm('确定清空调用记录吗？')) return
@@ -239,7 +240,7 @@ export default {
 
     onMounted(() => {
       refresh()
-      timer = setInterval(refresh, 2000)
+      timer = setInterval(poll, 5000)
     })
 
     onUnmounted(() => {

@@ -478,7 +478,8 @@ export default {
         if (!merged.baseUrl && !merged.apiMode && !merged.apiKey) return
         if (merged.baseUrl) config.value.baseUrl = merged.baseUrl
         if (merged.apiMode) config.value.apiMode = merged.apiMode
-        if (merged.apiKey) config.value.apiKey = merged.apiKey
+        // 只补空值：用户已经输入/粘贴新 Key 时，不被历史里的旧 Key 覆盖
+        if (merged.apiKey && !config.value.apiKey.trim()) config.value.apiKey = merged.apiKey
       } catch (error) {
         console.error('加载提供商配置失败:', error)
       }

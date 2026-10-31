@@ -55,7 +55,9 @@ export async function runCheckup(
   let models = []
   try {
     const listed = await adapter.listModels(config)
-    models = (listed.models || []).map((m) => m.id).filter(Boolean)
+    if (listed?.success !== false && Array.isArray(listed?.models)) {
+      models = listed.models.map((m) => m.id).filter(Boolean)
+    }
   } catch {
     // 列表失败不影响后续单模型体检
   }
@@ -169,6 +171,7 @@ export function toHistoryCheckup(checkup) {
       ? {
           agreement: checkup.consistency.agreement,
           accuracy: checkup.consistency.accuracy,
+          validCount: checkup.consistency.validCount,
           verdict: checkup.consistency.verdict,
         }
       : null,

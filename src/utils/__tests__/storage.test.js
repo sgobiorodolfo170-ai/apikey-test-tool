@@ -259,6 +259,27 @@ describe('storage', () => {
         }),
       ).rejects.toThrow('write failed')
     })
+
+    it('should back up corrupt JSON and fall back to defaults', async () => {
+      window.electronAPI.readFile = async () => ({ success: true, data: '{not-json' })
+      const history = await readHistory()
+
+      expect(history).toEqual([])
+      expect(window.electronAPI.writeFile).toHaveBeenCalled()
+      const [backupPath] = window.electronAPI.writeFile.mock.calls[0]
+      expect(backupPath).toContain('history.corrupt-')
+    })
+
+    it('should reject non-array history payloads instead of crashing', async () => {
+      window.electronAPI.readFile = async () => ({
+        success: true,
+        data: JSON.stringify({ version: 1, data: {} }),
+      })
+      const history = await readHistory()
+
+      expect(history).toEqual([])
+      expect(window.electronAPI.writeFile).toHaveBeenCalled()
+    })
   })
 })
 

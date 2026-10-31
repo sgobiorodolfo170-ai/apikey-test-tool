@@ -13,6 +13,8 @@ const EVAL_TIMEOUT_MS = 120000
 // 并发设为 2：贴近真人逐问，避免高并发触发网关限流(429)导致大面积失败
 const CAPABILITY_CONCURRENCY = 2
 const FINGERPRINT_CONCURRENCY = 2
+// 单题最多尝试次数：防止持续 5xx/网络错误时无限重试，未完成的题按 incomplete 处理
+const MAX_ATTEMPTS = 3
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -70,20 +72,19 @@ async function completeEval(
   config,
   model,
   items,
-  { concurrency, deadline, retryDelayMs = RETRY_DELAY_MS, onProgress },
+  { concurrency, deadline, retryDelayMs = RETRY_DELAY_MS, maxAttempts = MAX_ATTEMPTS, onProgress },
 ) {
   const results = new Array(items.length).fill(null)
+  const attempts = new Array(items.length).fill(0)
+  const lastErrors = new Array(items.length).fill('')
+  // 轮转队列：失败的题排到队尾，避免前几题持续失败时把后面的题饿死
+  const queue = Array.from({ length: items.length }, (_, i) => i)
   let done = 0
   const report = () => onProgress?.({ done, total: items.length })
   // 遇到限流后的全局节流时间点
   let throttleUntil = 0
 
-  while (true) {
-    const pending = []
-    for (let i = 0; i < items.length; i++) {
-      if (results[i] === null) pending.push(i)
-    }
-    if (pending.length === 0) break
+  while (queue.length > 0) {
     if (deadline && Date.now() >= deadline) break
 
     if (Date.now() < throttleUntil) {
@@ -91,7 +92,7 @@ async function completeEval(
       if (deadline && Date.now() >= deadline) break
     }
 
-    const batch = pending.slice(0, concurrency)
+    const batch = queue.splice(0, concurrency)
     await Promise.all(
       batch.map(async (index) => {
         const res = await ask(config, model, items[index].prompt)
@@ -99,8 +100,13 @@ async function completeEval(
           results[index] = res
           done++
           report()
-        } else {
-          // 瞬时失败：本轮未完成，稍后重试；并设置全局节流（尊重 Retry-After 但设上限）
+          return
+        }
+        // 瞬时失败：本轮未完成，排到队尾稍后重试；并设置全局节流（尊重 Retry-After 但设上限）
+        attempts[index] += 1
+        lastErrors[index] = res.error || ''
+        if (attempts[index] < maxAttempts) {
+          queue.push(index)
           throttleUntil = Math.max(
             throttleUntil,
             Date.now() + Math.min(res.retryAfter || retryDelayMs, THROTTLE_CAP_MS),
@@ -113,7 +119,12 @@ async function completeEval(
   const incompleteIds = []
   for (let i = 0; i < results.length; i++) {
     if (results[i] === null) {
-      results[i] = { ok: false, transient: true, error: '测评超时未完成（可能被限流）' }
+      const suffix = lastErrors[i] ? `：${lastErrors[i]}` : ''
+      results[i] = {
+        ok: false,
+        transient: true,
+        error: `测评未完成（已尝试 ${attempts[i]} 次${suffix}）`,
+      }
       incompleteIds.push(i)
     }
   }
@@ -130,14 +141,17 @@ export async function runFingerprintMatch(
     concurrency = FINGERPRINT_CONCURRENCY,
     timeoutMs = EVAL_TIMEOUT_MS,
     retryDelayMs = RETRY_DELAY_MS,
+    maxAttempts = MAX_ATTEMPTS,
     onProgress,
   } = {},
 ) {
-  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null
+  // 即使调用方传 0 也保留兜底时限，避免无 deadline 时无限重试
+  const deadline = Date.now() + (timeoutMs > 0 ? timeoutMs : EVAL_TIMEOUT_MS)
   const { results, incompleteIds } = await completeEval(config, model, FINGERPRINT_PROBES, {
     concurrency,
     deadline,
     retryDelayMs,
+    maxAttempts,
     onProgress,
   })
 
@@ -267,6 +281,7 @@ export async function runCapabilityTest(
     concurrency = CAPABILITY_CONCURRENCY,
     timeoutMs = EVAL_TIMEOUT_MS,
     retryDelayMs = RETRY_DELAY_MS,
+    maxAttempts = MAX_ATTEMPTS,
     onProgress,
     questions,
     seed,
@@ -277,11 +292,12 @@ export async function runCapabilityTest(
   const usedSeed = questions ? null : (seed ?? Date.now())
   const questionSet = questions || buildQuestionSet({ seed: usedSeed })
 
-  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null
+  const deadline = Date.now() + (timeoutMs > 0 ? timeoutMs : EVAL_TIMEOUT_MS)
   const { results, incompleteIds } = await completeEval(config, model, questionSet, {
     concurrency,
     deadline,
     retryDelayMs,
+    maxAttempts,
     onProgress,
   })
 
@@ -411,7 +427,15 @@ function canonicalizeAnswer(probe, text) {
   return `text:${normalize(text).slice(0, 20)}`
 }
 
-export function consistencyVerdict(agreement, accuracy) {
+export function consistencyVerdict(agreement, accuracy, validCount) {
+  // 全部采样失败时不能推断“轮换”或“降级”，否则会把网络/鉴权故障误报成模型问题
+  if (validCount === 0) {
+    return {
+      label: '无法判定',
+      color: 'warning',
+      note: '所有采样均失败（网络/鉴权/限流），未获得有效回答，无法判断一致性',
+    }
+  }
   if (accuracy >= 90 && agreement >= 90) {
     return { label: '一致性好', color: 'success', note: '多次采样结果稳定且正确' }
   }
@@ -473,6 +497,7 @@ export async function runConsistencyTest(
       accuracy: valid.length
         ? Math.round((valid.filter((c) => c === probe.expected).length / valid.length) * 100)
         : 0,
+      validCount: valid.length,
       uniqueCount: counts.size,
       failed: totalRounds - valid.length,
     })
@@ -483,6 +508,7 @@ export async function runConsistencyTest(
 
   const agreement = average(probes.map((p) => p.agreement))
   const accuracy = average(probes.map((p) => p.accuracy))
+  const validCount = probes.reduce((sum, p) => sum + p.validCount, 0)
 
   return {
     model,
@@ -490,7 +516,9 @@ export async function runConsistencyTest(
     probes,
     agreement,
     accuracy,
-    verdict: consistencyVerdict(agreement, accuracy),
+    validCount,
+    failedSamples: totalCalls - validCount,
+    verdict: consistencyVerdict(agreement, accuracy, validCount),
   }
 }
 

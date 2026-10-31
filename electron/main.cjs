@@ -4,6 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
 const relay = require('./relay.cjs')
+const { isPathSafe: isPathInside } = require('./lib/path-safety.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
 if (process.env.APKEY_USER_DATA_DIR) {
@@ -12,15 +13,9 @@ if (process.env.APKEY_USER_DATA_DIR) {
 
 const USER_DATA_PATH = app.getPath('userData')
 
-// 仅允许访问 userData 目录内的路径。
-// 不能用 startsWith 判断：同前缀的兄弟目录（如 userData + "X"）会被误判为合法。
+// 仅允许访问 userData 目录内的路径（实现在 lib/path-safety.cjs，便于单测）
 function isPathSafe(targetPath) {
-  if (typeof targetPath !== 'string' || targetPath.trim() === '') return false
-  const resolved = path.resolve(targetPath)
-  const root = path.resolve(USER_DATA_PATH)
-  const relative = path.relative(root, resolved)
-  if (relative === '') return true
-  return !relative.startsWith('..') && !path.isAbsolute(relative)
+  return isPathInside(USER_DATA_PATH, targetPath)
 }
 
 let mainWindow = null
@@ -143,16 +138,11 @@ function logError(errorType, errorMessage, stackTrace) {
     const timestamp = formatDate()
 
     rotateLogIfNeeded(logPath)
-
-    let existingContent = ''
-    if (fs.existsSync(logPath)) {
-      existingContent = fs.readFileSync(logPath, 'utf-8')
-      const markerIndex = existingContent.indexOf('<!-- 错误日志将自动追加到此处 -->')
-      if (markerIndex !== -1) {
-        existingContent = existingContent.substring(0, markerIndex)
-      }
+    if (!fs.existsSync(logPath)) {
+      fs.writeFileSync(logPath, '# 错误日志\n\n', 'utf-8')
     }
 
+    // 追加写而不是“读全文 → 拼接 → 覆盖”，避免日志变大后阻塞主进程
     const logEntry = `========================================
 时间: ${timestamp}
 ========================================
@@ -162,10 +152,7 @@ function logError(errorType, errorMessage, stackTrace) {
 ----------------------------------------
 
 `
-
-    const newContent = existingContent + logEntry + '<!-- 错误日志将自动追加到此处 -->\n\n'
-
-    fs.writeFileSync(logPath, newContent, 'utf-8')
+    fs.appendFileSync(logPath, logEntry, 'utf-8')
     console.error(`[ERROR LOGGED] ${timestamp} - ${errorType}: ${errorMessage}`)
   } catch (e) {
     console.error('写入错误日志失败:', e)
@@ -894,6 +881,8 @@ function createWindow() {
 function cleanupResources() {
   console.log('正在清理资源...')
 
+  // 退出前同步落盘，保证最后一次统计/额度不丢
+  relay.persistNow({ sync: true })
   relay.stop()
   if (tray && !tray.isDestroyed()) {
     tray.destroy()
@@ -1024,7 +1013,7 @@ ipcMain.handle('read-file', async (event, filePath) => {
     return { success: false, error: 'Access denied' }
   }
   try {
-    const data = fs.readFileSync(filePath, 'utf-8')
+    const data = await fs.promises.readFile(filePath, 'utf-8')
     return { success: true, data }
   } catch (error) {
     return { success: false, error: error.message }
@@ -1035,14 +1024,19 @@ ipcMain.handle('write-file', async (event, filePath, data) => {
   if (!isPathSafe(filePath)) {
     return { success: false, error: 'Access denied' }
   }
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`
   try {
-    const dir = path.dirname(filePath)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
-    fs.writeFileSync(filePath, data, 'utf-8')
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+    // 先写临时文件再原子替换：进程崩溃/断电时不会留下半截 JSON
+    await fs.promises.writeFile(tmpPath, data, 'utf-8')
+    await fs.promises.rename(tmpPath, filePath)
     return { success: true }
   } catch (error) {
+    try {
+      await fs.promises.unlink(tmpPath)
+    } catch {
+      // 临时文件可能未创建或已被 rename
+    }
     return { success: false, error: error.message }
   }
 })
