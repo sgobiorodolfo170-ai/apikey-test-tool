@@ -34,3 +34,6 @@ dist-app-build*/
 
 # 本地工具缓存
 .opencode/
+
+# 本地打包测试输出
+dist-test/

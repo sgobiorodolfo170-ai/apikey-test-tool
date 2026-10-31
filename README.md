@@ -19,7 +19,7 @@
 
 ## 安装与启动
 
-**Windows**：解压/运行 `dist-app/APIKey测试工具-<版本>-portable.exe`。未做代码签名，首次运行可能出现 SmartScreen 提示，选择“更多信息 → 仍要运行”。
+**Windows**：发布页提供目录版 zip，解压后运行 `APIKey测试工具.exe`；本地执行 `npm run build:win` 生成单文件 portable exe。未做代码签名，首次运行可能出现 SmartScreen 提示，选择“更多信息 → 仍要运行”。
 
 **macOS**：打开 dmg，把应用拖入 `Applications`。未签名/未公证时首次打开需右键选择“打开”；如被隔离，可执行：
 
