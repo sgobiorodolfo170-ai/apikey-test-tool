@@ -95,6 +95,20 @@ describe('HistoryPanel', () => {
     expect(labels).toEqual(['配置', '历史', '渠道', '中转站', '调用监控', '统计'])
   })
 
+  it('switches to the config tab after loading a record config', async () => {
+    const loadConfigSpy = vi.spyOn(historyStore, 'loadConfig').mockResolvedValue()
+    const loadButton = wrapper.findAll('button').find((b) => b.text() === '加载配置')
+    expect(loadButton).toBeTruthy()
+
+    await loadButton.trigger('click')
+    await flushPromises()
+
+    expect(loadConfigSpy).toHaveBeenCalledTimes(1)
+    expect(historyStore.configTabRequest).toBe(1)
+    // 配置页已渲染，说明选项卡已切到「配置」
+    expect(wrapper.text()).toContain('提供商名称')
+  })
+
   it('switches to the relay tab', async () => {
     const relayTab = wrapper.findAll('button').find((b) => b.text().startsWith('中转站'))
     await relayTab.trigger('click')

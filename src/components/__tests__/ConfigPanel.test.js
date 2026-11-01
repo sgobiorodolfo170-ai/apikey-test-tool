@@ -13,6 +13,7 @@ vi.mock('../../utils/storage.js', () => ({
 
 import ConfigPanel from '../ConfigPanel.vue'
 import { useTestStore } from '../../stores/testStore.js'
+import { useHistoryStore } from '../../stores/historyStore.js'
 import { readProviders, readProviderSettings, readHistory } from '../../utils/storage.js'
 
 describe('ConfigPanel', () => {
@@ -305,6 +306,47 @@ describe('ConfigPanel', () => {
     expect(wrapper.vm.config.baseUrl).toBe('https://settings.com')
     expect(wrapper.vm.config.apiMode).toBe('openai')
     expect(wrapper.vm.config.apiKey).toBe('sk-from-history')
+  })
+
+  it('fills the form when the panel mounts after a load request', () => {
+    // 历史/渠道点「加载」时配置面板可能还没挂载（v-else），挂载后要按最新配置填充
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useTestStore().setCurrentConfig({
+      provider: '历史提供商',
+      baseUrl: 'https://loaded.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-loaded',
+    })
+    useHistoryStore().requestConfigTab()
+
+    const local = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    expect(local.vm.config.provider).toBe('历史提供商')
+    expect(local.vm.config.baseUrl).toBe('https://loaded.example.com/v1')
+    expect(local.vm.config.apiKey).toBe('sk-loaded')
+    local.unmount()
+  })
+
+  it('does not overwrite the form with a stale config on a plain mount', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useTestStore().setCurrentConfig({
+      provider: '旧提供商',
+      baseUrl: 'https://old.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-old',
+    })
+
+    const local = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    expect(local.vm.config.baseUrl).toBe('')
+    expect(local.vm.config.apiKey).toBe('')
+    local.unmount()
   })
 })
 

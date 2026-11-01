@@ -20,6 +20,7 @@ vi.mock('../../utils/storage.js', () => ({
 import ChannelPanel from '../ChannelPanel.vue'
 import { useChannelStore } from '../../stores/channelStore.js'
 import { useHistoryStore } from '../../stores/historyStore.js'
+import { useTestStore } from '../../stores/testStore.js'
 import { readChannels } from '../../utils/storage.js'
 
 const channels = [
@@ -95,7 +96,15 @@ describe('ChannelPanel', () => {
     const useButton = wrapper.findAll('button').find((b) => b.text() === '使用')
     await useButton.trigger('click')
 
-    expect(channelStore.pendingApply).toEqual(channels[0])
+    // 配置写入 testStore（配置页据此填充），并请求切到配置选项卡
+    const testStore = useTestStore()
+    expect(testStore.currentConfig).toEqual({
+      provider: channels[0].name,
+      baseUrl: channels[0].baseUrl,
+      apiMode: channels[0].apiMode,
+      apiKey: channels[0].apiKey,
+    })
+    expect(useHistoryStore().configTabRequest).toBe(1)
   })
 
   it('deletes a channel after confirmation', async () => {

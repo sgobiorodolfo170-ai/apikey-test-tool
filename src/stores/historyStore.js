@@ -13,6 +13,8 @@ export const useHistoryStore = defineStore('history', {
     records: [],
     loading: false,
     initialized: false,
+    // 递增计数：历史/渠道里点「加载/使用」后请求切到配置选项卡
+    configTabRequest: 0,
   }),
   actions: {
     async loadHistory() {
@@ -64,6 +66,10 @@ export const useHistoryStore = defineStore('history', {
 
       testStore.setCurrentConfig(config)
       toastStore.addToast(`配置已加载: ${config.provider || '未知'}`, 'success')
+    },
+    // 请求卡片切到「配置」选项卡（历史/渠道的加载按钮共用）
+    requestConfigTab() {
+      this.configTabRequest += 1
     },
     async reloadRecord(record) {
       if (!record?.config) return

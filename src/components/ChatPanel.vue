@@ -493,9 +493,9 @@ export default {
 .chat-bg {
   background-color: #ffffff;
 }
-/* 聊天展示框：淡灰白底，与输入框的纯白区分开 */
+/* 聊天展示框：白底，与输入框的纯白区分开 */
 .chat-area-bg {
-  background-color: #f7f7f9;
+  background-color: #ffffff;
 }
 .stream-cursor {
   display: inline-block;

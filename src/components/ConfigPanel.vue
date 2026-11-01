@@ -274,6 +274,7 @@
 <script>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
+import { useHistoryStore } from '../stores/historyStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
 import ResultPanel from './ResultPanel.vue'
 import { useToastStore } from '../stores/toastStore.js'
@@ -285,6 +286,7 @@ export default {
   components: { ResultPanel },
   setup() {
     const testStore = useTestStore()
+    const historyStore = useHistoryStore()
     const channelStore = useChannelStore()
     const toastStore = useToastStore()
 
@@ -536,18 +538,35 @@ export default {
       }
     }
 
+    // 把 testStore 里待应用的配置填充到表单（保留用户已填写的其它字段）
+    const applyCurrentConfig = () => {
+      const newConfig = testStore.currentConfig
+      if (!newConfig) return
+      config.value = {
+        provider: newConfig.provider ?? config.value.provider,
+        baseUrl: newConfig.baseUrl ?? config.value.baseUrl,
+        apiMode: newConfig.apiMode ?? config.value.apiMode,
+        apiKey: newConfig.apiKey ?? config.value.apiKey,
+      }
+    }
+
     watch(
       () => testStore.currentConfig,
-      (newConfig) => {
-        if (newConfig) {
-          config.value = {
-            provider: newConfig.provider ?? config.value.provider,
-            baseUrl: newConfig.baseUrl ?? config.value.baseUrl,
-            apiMode: newConfig.apiMode ?? config.value.apiMode,
-            apiKey: newConfig.apiKey ?? config.value.apiKey,
-          }
-        }
+      () => applyCurrentConfig(),
+    )
+
+    // 历史/渠道点「加载」时会递增该计数：
+    // 配置面板可能刚刚才挂载（v-else），因此在 immediate 时也按最新配置填充，
+    // 而不是只监听后续变化
+    const appliedConfigRequest = ref(0)
+    watch(
+      () => historyStore.configTabRequest,
+      (value) => {
+        if (value === appliedConfigRequest.value) return
+        appliedConfigRequest.value = value
+        applyCurrentConfig()
       },
+      { immediate: true },
     )
 
     watch(
@@ -580,21 +599,6 @@ export default {
         apiKey: config.value.apiKey,
       })
     }
-
-    // 从「渠道」页签点「使用」时，把渠道配置填回表单
-    watch(
-      () => channelStore.pendingApply,
-      (channel) => {
-        if (!channel) return
-        config.value = {
-          provider: channel.name ?? config.value.provider,
-          baseUrl: channel.baseUrl ?? config.value.baseUrl,
-          apiMode: channel.apiMode ?? config.value.apiMode,
-          apiKey: channel.apiKey ?? config.value.apiKey,
-        }
-        channelStore.consumeApply()
-      },
-    )
 
     onMounted(() => {
       if (!channelStore.initialized) channelStore.load()

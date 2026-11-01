@@ -217,10 +217,7 @@
               >
                 加入中转站
               </button>
-              <button
-                class="btn-primary text-xs px-2 py-1"
-                @click.stop="historyStore.loadConfig(record)"
-              >
+              <button class="btn-primary text-xs px-2 py-1" @click.stop="loadConfigToPanel(record)">
                 加载配置
               </button>
             </div>
@@ -249,7 +246,7 @@
 </template>
 
 <script>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useHistoryStore } from '../stores/historyStore.js'
 import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
@@ -398,6 +395,20 @@ export default {
       relayStore.loadLogs()
     })
 
+    // 历史记录加载配置后切到配置选项卡，确保用户立刻看到已填入的内容
+    const loadConfigToPanel = async (record) => {
+      await historyStore.loadConfig(record)
+      historyStore.requestConfigTab()
+    }
+
+    // 渠道页「使用」也通过同一计数请求切到配置选项卡
+    watch(
+      () => historyStore.configTabRequest,
+      (value, oldValue) => {
+        if (value !== oldValue) activeTab.value = 'config'
+      },
+    )
+
     return {
       historyStore,
       testStore,
@@ -410,6 +421,7 @@ export default {
       requestCount,
       handleDelete,
       handleReload,
+      loadConfigToPanel,
       addToRelay,
       previousScore,
       scoreDelta,

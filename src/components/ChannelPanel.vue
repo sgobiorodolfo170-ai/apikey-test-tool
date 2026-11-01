@@ -104,6 +104,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useChannelStore } from '../stores/channelStore.js'
 import { useHistoryStore } from '../stores/historyStore.js'
 import { useEvalStore } from '../stores/evalStore.js'
+import { useTestStore } from '../stores/testStore.js'
 import { useToastStore } from '../stores/toastStore.js'
 import { apiModeLabel } from '../api/modes.js'
 import { buildChannelComparison } from '../utils/comparison.js'
@@ -116,6 +117,7 @@ export default {
     const channelStore = useChannelStore()
     const historyStore = useHistoryStore()
     const evalStore = useEvalStore()
+    const testStore = useTestStore()
     const toastStore = useToastStore()
 
     const checkingId = ref(null)
@@ -159,7 +161,14 @@ export default {
     }
 
     const useChannel = (channel) => {
-      channelStore.apply(channel)
+      // 与历史记录的「加载配置」写入同一份状态：配置页据此填充表单
+      testStore.setCurrentConfig({
+        provider: channel.name,
+        baseUrl: channel.baseUrl,
+        apiMode: channel.apiMode,
+        apiKey: channel.apiKey,
+      })
+      historyStore.requestConfigTab()
       toastStore.addToast(`已填入配置：${channel.name}`, 'success')
     }
 

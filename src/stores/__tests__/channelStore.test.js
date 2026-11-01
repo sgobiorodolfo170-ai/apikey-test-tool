@@ -80,15 +80,4 @@ describe('channelStore', () => {
     expect(deleteChannel).toHaveBeenCalledWith('ch_1')
     expect(store.channels).toEqual([])
   })
-
-  it('hands a channel over to the config panel once', () => {
-    const store = useChannelStore()
-
-    store.apply(sample)
-    expect(store.pendingApply).toEqual(sample)
-
-    const applied = store.consumeApply()
-    expect(applied).toEqual(sample)
-    expect(store.pendingApply).toBeNull()
-  })
 })

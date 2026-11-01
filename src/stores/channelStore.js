@@ -7,9 +7,6 @@ export const useChannelStore = defineStore('channel', {
     channels: [],
     loading: false,
     initialized: false,
-    // 供 ConfigPanel 消费的「待应用渠道」：ChannelPanel 点「使用」时写入，
-    // ConfigPanel 监听后填充表单并清空。这样两个卡片之间不需要直接引用。
-    pendingApply: null,
   }),
   getters: {
     count: (state) => state.channels.length,
@@ -50,14 +47,6 @@ export const useChannelStore = defineStore('channel', {
         toastStore.addToast('删除渠道失败: ' + error.message, 'error')
         return false
       }
-    },
-    apply(channel) {
-      this.pendingApply = { ...channel }
-    },
-    consumeApply() {
-      const channel = this.pendingApply
-      this.pendingApply = null
-      return channel
     },
   },
 })
