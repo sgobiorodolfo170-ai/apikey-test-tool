@@ -129,7 +129,10 @@ npm run smoke           # 需先 build；真实 Electron + CDP
 
 ## 打包
 
-- Windows：`npm run build:win`，`win.target: portable`、x64，产物在 `dist-app/`，图标 `ico/icon-256x256.png`。
+- Windows：`npm run build:win`，`win.target` 为 `portable` + `nsis`（均为 x64），产物在 `dist-app/`：
+  - `APIKeyTester-<version>-portable-x64.exe`（免安装单文件）
+  - `APIKeyTester-<version>-setup-x64.exe`（安装向导 + 快捷方式）
+  - 图标 `ico/icon-256x256.png`
 - macOS：`npm run build:mac`，`mac.target` 为 dmg + zip、x64 + arm64；应用图标使用 `ico/icon.svg`，electron-builder 在 macOS 上转换为 icns。
 - 通用：`npm run build` 构建当前平台；前端产物在 `dist/`。
 - macOS 包必须在 macOS 上构建（不支持在 Windows 交叉打包）；未做代码签名与公证，首次打开需右键“打开”。
