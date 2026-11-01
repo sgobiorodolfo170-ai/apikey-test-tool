@@ -1243,6 +1243,7 @@ async function attempt(provider, path, body, res, context) {
             ms: elapsed,
             stream: contentType.includes('event-stream'),
             attempt: context.attempt,
+            path: context.path,
             error: status >= 400 ? `HTTP ${status}` : null,
             requestId: context.requestId,
             keyTail: keyTailOf(provider.apiKey),
@@ -1274,6 +1275,7 @@ async function attempt(provider, path, body, res, context) {
                 ms: elapsed,
                 stream: contentType.includes('event-stream'),
                 attempt: context.attempt,
+                path: context.path,
                 error: `429 确认额度耗尽，该 Key 暂停至${lock.level === 'week' ? '周' : '5 小时'}窗口重置`,
                 requestId: context.requestId,
                 keyTail: keyTailOf(provider.apiKey),
@@ -1395,6 +1397,7 @@ async function forwardWithFailover(providers, path, body, res, context) {
           ms: Date.now() - attemptStarted,
           stream: false,
           attempt: index + 1,
+          path: context.path,
           error: '客户端已断开',
           requestId: context.requestId,
           keyTail: keyTailOf(provider.apiKey),
@@ -1421,6 +1424,7 @@ async function forwardWithFailover(providers, path, body, res, context) {
         ms: Date.now() - attemptStarted,
         stream: false,
         attempt: index + 1,
+        path: context.path,
         error: quotaLock
           ? `429 确认额度耗尽，该 Key 暂停至${quotaLock.level === 'week' ? '周' : '5 小时'}窗口重置`
           : error.message,
@@ -1483,6 +1487,7 @@ async function forwardWithFailover(providers, path, body, res, context) {
       ms: 0,
       stream: false,
       attempt: skipped,
+      path: context.path,
       error: `额度用尽：${skipped} 个 Key${skipped ? `（…${quotaSkipped.join('、…')}）` : ''}`,
       requestId: context.requestId,
       keyTail: '',
@@ -1577,6 +1582,7 @@ async function handleJsonProxy(req, res, upstreamPath, cacheable, client = '') {
         ms: 0,
         stream: false,
         attempt: 0,
+        path: upstreamPath,
         error: null,
         requestId,
         keyTail: '',
@@ -1608,6 +1614,8 @@ async function handleJsonProxy(req, res, upstreamPath, cacheable, client = '') {
     cacheKey,
     cacheTtlMs: config.cache?.ttlMs || 300000,
     cacheMaxEntries: config.cache?.maxEntries || 200,
+    // 日志里记录请求路径，统计页据此区分 chat / embeddings 的缓存命中率
+    path: upstreamPath,
   })
 }
 

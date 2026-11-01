@@ -11,6 +11,12 @@
         · 每 2 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>
+      <span v-if="cacheStats.hasData" class="basis-full text-[13px] text-text-muted">
+        缓存命中：非流式 chat {{ cacheStats.chat.text }} · embeddings
+        {{ cacheStats.embeddings.text }} · 节省率
+        {{ savingsRate === null ? '—' : savingsRate + '%' }}
+        <template v-if="cacheStats.clientText"> · 客户端：{{ cacheStats.clientText }}</template>
+      </span>
     </div>
 
     <RelayTokenChart v-if="hasAnyUsage" />
@@ -208,6 +214,65 @@ export default {
       return result
     })
 
+    // 缓存命中率：只统计参与缓存的请求（非流式），同一 requestId 的多次尝试不重复计数
+    const rateText = (bucket) => {
+      if (bucket.requests <= 0) return '—（0/0）'
+      const rate = Math.round((bucket.hits / bucket.requests) * 100)
+      return `${rate}%（${bucket.hits}/${bucket.requests}）`
+    }
+
+    const cacheStats = computed(() => {
+      const buckets = {
+        chat: { requests: 0, hits: 0 },
+        embeddings: { requests: 0, hits: 0 },
+      }
+      const clients = new Map()
+      const seen = new Set()
+
+      for (const log of logs.value) {
+        // 流式请求不参与缓存，放进分母会把命中率稀释成无意义的 0
+        if (log.stream) continue
+        const id = log.requestId || log.id
+        if (id) {
+          if (seen.has(id)) continue
+          seen.add(id)
+        }
+        const kind = log.path === '/embeddings' ? 'embeddings' : 'chat'
+        buckets[kind].requests += 1
+        if (log.cached) buckets[kind].hits += 1
+
+        const name = log.client || '未标注'
+        const row = clients.get(name) || { client: name, requests: 0, hits: 0 }
+        row.requests += 1
+        if (log.cached) row.hits += 1
+        clients.set(name, row)
+      }
+
+      const list = [...clients.values()].sort((a, b) => b.requests - a.requests)
+      const clientText = list
+        .slice(0, 4)
+        .map((row) => `${row.client} ${rateText(row)}`)
+        .join(' · ')
+
+      return {
+        chat: { ...buckets.chat, text: rateText(buckets.chat) },
+        embeddings: { ...buckets.embeddings, text: rateText(buckets.embeddings) },
+        clientText: list.length > 4 ? `${clientText} 等 ${list.length} 个` : clientText,
+        hasData: buckets.chat.requests + buckets.embeddings.requests > 0,
+      }
+    })
+
+    // 节省率 = 缓存节省 tokens /（真实消耗 + 节省），比命中率更能反映实际收益
+    const savingsRate = computed(() => {
+      let real = 0
+      let saved = 0
+      for (const day of relayStore.tokenHistory) {
+        real += Number(day.total) || 0
+        saved += Number(day.cached?.total) || 0
+      }
+      return real + saved > 0 ? Math.round((saved / (real + saved)) * 100) : null
+    })
+
     const refresh = async () => {
       await relayStore.loadLogs()
       await relayStore.loadTokenHistory()
@@ -243,6 +308,8 @@ export default {
       modelRows,
       summary,
       cachedSummary,
+      cacheStats,
+      savingsRate,
       refresh,
       formatNumber,
       formatTokenAmount,

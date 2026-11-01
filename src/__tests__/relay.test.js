@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+﻿import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -504,6 +504,7 @@ describe('中转增强：别名 / embeddings / 缓存', () => {
   it('serves identical non-stream requests from cache', async () => {
     relay.clearCache()
     relay.clearStats()
+    relay.clearLogs()
     calls.length = 0
     const base = `http://127.0.0.1:${info.port}/v1`
     const body = JSON.stringify({
@@ -525,11 +526,15 @@ describe('中转增强：别名 / embeddings / 缓存', () => {
     expect(calls.length).toBe(1)
     expect(second.headers.get('x-relay-cache')).toBe('hit')
     expect(relay.getStats().some((item) => item.provider === '缓存')).toBe(true)
+    // 日志记录请求路径，供统计页区分 chat / embeddings 的命中率
+    const hitLog = relay.getLogs().find((item) => item.cached)
+    expect(hitLog.path).toBe('/chat/completions')
   })
 
   it('serves identical embeddings requests from cache', async () => {
     relay.clearCache()
     relay.clearStats()
+    relay.clearLogs()
     calls.length = 0
     const base = `http://127.0.0.1:${info.port}/v1`
     const body = JSON.stringify({ model: 'real-model', input: 'hello' })
@@ -547,6 +552,7 @@ describe('中转增强：别名 / embeddings / 缓存', () => {
     expect(second.status).toBe(200)
     expect(calls.length).toBe(1)
     expect(second.headers.get('x-relay-cache')).toBe('hit')
+    expect(relay.getLogs().find((item) => item.cached)?.path).toBe('/embeddings')
   })
 
   it('keeps cached tokens out of real usage and reports savings separately', async () => {
