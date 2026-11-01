@@ -107,6 +107,14 @@ function debounce(fn, delay) {
   }
 }
 
+const MIN_WINDOW_WIDTH = 900
+const MIN_WINDOW_HEIGHT = 600
+const COLLAPSED_MIN_WIDTH = 320
+
+// 折叠聊天测试卡片时窗口会临时缩小：记录原始 bounds 与最大化状态，展开时原样恢复。
+// 此期间 saveWindowState 不写盘，避免把临时尺寸当成用户偏好保存下来。
+let collapsedWindowState = null
+
 function loadWindowState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
@@ -124,6 +132,7 @@ function loadWindowState() {
 
 function saveWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  if (collapsedWindowState) return
   try {
     const bounds = mainWindow.getBounds()
     const maximized = mainWindow.isMaximized()
@@ -132,6 +141,45 @@ function saveWindowState() {
   } catch {
     // 窗口状态写入失败不影响应用运行
   }
+}
+
+// 折叠/展开聊天测试卡片：折叠时把主窗口收窄到左区卡片的宽度，展开时恢复原尺寸与最大化状态
+function setCollapsedWindow(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+  const collapsed = payload?.collapsed === true
+
+  if (!collapsed) {
+    if (collapsedWindowState) {
+      const { bounds, maximized } = collapsedWindowState
+      collapsedWindowState = null
+      mainWindow.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+      mainWindow.setBounds(bounds)
+      if (maximized) mainWindow.maximize()
+    }
+    return { ok: true }
+  }
+
+  if (!collapsedWindowState) {
+    collapsedWindowState = {
+      bounds: mainWindow.getBounds(),
+      maximized: mainWindow.isMaximized(),
+    }
+  }
+
+  const target = Math.round(Number(payload?.width) || 0)
+  if (!Number.isFinite(target) || target <= COLLAPSED_MIN_WIDTH) {
+    return { ok: false, error: 'invalid width' }
+  }
+
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  const bounds = mainWindow.getBounds()
+  const area = screen.getDisplayMatching(bounds).workArea
+  // 不能超出屏幕工作区：宽度受限，x 坐标也随之内收
+  const width = Math.min(target, area.width)
+  const x = Math.min(Math.max(bounds.x, area.x), area.x + area.width - width)
+  mainWindow.setMinimumSize(COLLAPSED_MIN_WIDTH, MIN_WINDOW_HEIGHT)
+  mainWindow.setBounds({ x, y: bounds.y, width, height: bounds.height })
+  return { ok: true, width }
 }
 
 const MAX_LOG_BYTES = 1024 * 1024 // 超过 1MB 归档，避免日志无限增长
@@ -803,8 +851,8 @@ function createWindow() {
     width: state.width,
     height: state.height,
     ...(state.maximized ? {} : { x: state.x, y: state.y }),
-    minWidth: 900,
-    minHeight: 600,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -1042,6 +1090,14 @@ ipcMain.handle('get-user-data-path', () => {
   return app.getPath('userData')
 })
 
+ipcMain.handle('window-set-collapsed', async (event, payload) => {
+  try {
+    return setCollapsedWindow(payload)
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+})
+
 ipcMain.handle('read-file', async (event, filePath) => {
   if (!isPathSafe(filePath)) {
     return { success: false, error: 'Access denied' }
@@ -1150,6 +1206,11 @@ ipcMain.handle('relay-clear-logs', async () => {
 })
 
 ipcMain.handle('relay-stats', async () => ({ ok: true, stats: relay.getStats() }))
+
+ipcMain.handle('relay-token-history', async () => ({
+  ok: true,
+  history: relay.getTokenHistory(),
+}))
 
 ipcMain.handle('relay-stats-clear', async () => {
   relay.clearStats()

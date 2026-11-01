@@ -475,7 +475,10 @@ function recordStat({ provider, model, status, ms, error, usage }) {
     : status === 429 || error?.code === 'rate_limited'
       ? 'rate_limited'
       : 'failed'
-  if (usage) entry.usage = usage
+  if (usage) {
+    entry.usage = usage
+    recordDailyUsage(model || entry.model, usage)
+  }
 
   if (statsByKey.size > MAX_STATS) {
     const oldest = [...statsByKey.entries()].sort((a, b) =>
@@ -494,7 +497,94 @@ function getStats() {
 
 function clearStats() {
   statsByKey.clear()
+  dailyTokens.clear()
   return persistNow()
+}
+
+// ---------- 按日 token 统计（持久化，供日 / 周 / 月图表使用） ----------
+const MAX_DAILY_DAYS = 400
+const dailyTokens = new Map()
+
+// 用本地时间切日：用户看到的“今天”与系统日期一致
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function pruneDailyTokens(now = new Date()) {
+  if (dailyTokens.size <= MAX_DAILY_DAYS) return
+  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (MAX_DAILY_DAYS - 1))
+  const cutoffKey = localDateKey(cutoff)
+  for (const key of [...dailyTokens.keys()]) {
+    if (key < cutoffKey) dailyTokens.delete(key)
+  }
+}
+
+function addDailyUsage(date, model, usage) {
+  if (!usage) return
+  const prompt = Number(usage.prompt) || 0
+  const completion = Number(usage.completion) || 0
+  const total = Number(usage.total) || prompt + completion
+  if (prompt <= 0 && completion <= 0 && total <= 0) return
+
+  const day = localDateKey(date)
+  let entry = dailyTokens.get(day)
+  if (!entry) {
+    entry = { prompt: 0, completion: 0, total: 0, calls: 0, models: new Map() }
+    dailyTokens.set(day, entry)
+  }
+  entry.calls += 1
+  entry.prompt += prompt
+  entry.completion += completion
+  entry.total += total
+
+  const name = model || '未知模型'
+  let item = entry.models.get(name)
+  if (!item) {
+    item = { prompt: 0, completion: 0, total: 0, calls: 0 }
+    entry.models.set(name, item)
+  }
+  item.calls += 1
+  item.prompt += prompt
+  item.completion += completion
+  item.total += total
+
+  pruneDailyTokens()
+}
+
+function recordDailyUsage(model, usage) {
+  addDailyUsage(new Date(), model, usage)
+}
+
+// 升级到按日统计之前的旧数据文件没有 daily 字段：用已持久化的请求日志回填，
+// 让图表一升级就能看到最近的用量（日志上限 200 条，仅回填这一窗口）。
+function backfillDailyFromLogs() {
+  const ordered = [...logs].sort((a, b) => String(a.at).localeCompare(String(b.at)))
+  for (const log of ordered) {
+    const at = new Date(log.at)
+    if (Number.isNaN(at.getTime())) continue
+    addDailyUsage(at, log.model, log.usage)
+  }
+  // 回填后尽快把 daily 写盘，避免只存在内存里
+  if (dailyTokens.size > 0) schedulePersist()
+}
+
+// 图表数据：按日期升序，models 按 token 用量降序
+function getTokenHistory() {
+  return [...dailyTokens.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, entry]) => ({
+      date,
+      prompt: entry.prompt,
+      completion: entry.completion,
+      total: entry.total,
+      calls: entry.calls,
+      models: [...entry.models.entries()]
+        .map(([model, item]) => ({ model, ...item }))
+        .sort((a, b) => b.total - a.total),
+    }))
 }
 
 // ---------- 持久化（日志与统计） ----------
@@ -551,6 +641,38 @@ function attachStorage(file) {
         })
       }
     }
+    // 按日 token 统计恢复：图表数据跨重启保留
+    if (Array.isArray(raw.daily)) {
+      dailyTokens.clear()
+      for (const entry of raw.daily.slice(-MAX_DAILY_DAYS)) {
+        if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue
+        const value = entry[1]
+        if (!value || typeof value !== 'object') continue
+        const models = new Map()
+        if (Array.isArray(value.models)) {
+          for (const modelEntry of value.models) {
+            if (!Array.isArray(modelEntry) || typeof modelEntry[0] !== 'string') continue
+            const item = modelEntry[1] || {}
+            models.set(modelEntry[0], {
+              prompt: Number(item.prompt) || 0,
+              completion: Number(item.completion) || 0,
+              total: Number(item.total) || 0,
+              calls: Number(item.calls) || 0,
+            })
+          }
+        }
+        dailyTokens.set(entry[0], {
+          prompt: Number(value.prompt) || 0,
+          completion: Number(value.completion) || 0,
+          total: Number(value.total) || 0,
+          calls: Number(value.calls) || 0,
+          models,
+        })
+      }
+    } else {
+      // 旧数据文件（升级前）没有 daily 字段：用日志回填一次，后续写盘会带上 daily
+      backfillDailyFromLogs()
+    }
   } catch {
     // 首次运行或文件损坏：忽略
   }
@@ -571,6 +693,16 @@ function persistNow({ sync = false } = {}) {
     payload = JSON.stringify({
       logs: logs.slice(0, MAX_PERSIST_LOGS),
       stats: getStats(),
+      daily: [...dailyTokens.entries()].map(([date, entry]) => [
+        date,
+        {
+          prompt: entry.prompt,
+          completion: entry.completion,
+          total: entry.total,
+          calls: entry.calls,
+          models: [...entry.models.entries()],
+        },
+      ]),
       quota,
       locks,
     })
@@ -1702,6 +1834,7 @@ module.exports = {
   clearLogs,
   getStats,
   clearStats,
+  getTokenHistory,
   extractUsage,
   attachStorage,
   persistNow,

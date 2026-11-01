@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import HistoryPanel from '../HistoryPanel.vue'
 import { useHistoryStore } from '../../stores/historyStore.js'
 import { useTestStore } from '../../stores/testStore.js'
+import { useUpdateStore } from '../../stores/updateStore.js'
 import { setupElectronAPIMock, clearElectronAPIMock, mockStore } from '../../__tests__/setup.js'
 
 describe('HistoryPanel', () => {
@@ -76,8 +77,8 @@ describe('HistoryPanel', () => {
     }
   })
 
-  it('should show clear button', () => {
-    expect(wrapper.text()).toContain('清空')
+  it('should not render a clear button', () => {
+    expect(wrapper.text()).not.toContain('清空')
   })
 
   it('orders the tabs as 历史 / 渠道 / 中转站 / 调用监控 / 统计 / 配置', () => {
@@ -176,5 +177,61 @@ describe('HistoryPanel 加入中转站', () => {
 
     expect(savedProviders()).toHaveLength(0)
     expect(wrapper.text()).toContain('中转站')
+  })
+})
+
+describe('HistoryPanel 版本与更新', () => {
+  let wrapper
+  let updateStore
+
+  beforeEach(async () => {
+    setupElectronAPIMock()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    updateStore = useUpdateStore()
+    wrapper = mount(HistoryPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    clearElectronAPIMock()
+  })
+
+  it('always shows the current version in the card header', () => {
+    expect(wrapper.text()).toContain(`v${updateStore.currentVersion}`)
+  })
+
+  it('hides the update button when already up to date', () => {
+    expect(wrapper.findAll('button').some((b) => b.text().includes('更新'))).toBe(false)
+  })
+
+  it('shows the update button when a newer release exists', async () => {
+    updateStore.latest = {
+      version: '99.0.0',
+      url: 'https://github.com/x/y/releases/tag/v99.0.0',
+    }
+    await wrapper.vm.$nextTick()
+
+    const updateButton = wrapper.findAll('button').find((b) => b.text().includes('更新'))
+    expect(updateButton).toBeTruthy()
+    expect(updateButton.attributes('title')).toContain('99.0.0')
+  })
+
+  it('opens the release page through the bridge', async () => {
+    const openExternal = vi.fn(async () => ({ success: true }))
+    window.electronAPI = { ...(window.electronAPI || {}), openExternal }
+    updateStore.latest = {
+      version: '99.0.0',
+      url: 'https://github.com/x/y/releases/tag/v99.0.0',
+    }
+    await wrapper.vm.$nextTick()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('更新'))
+      .trigger('click')
+
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/x/y/releases/tag/v99.0.0')
   })
 })

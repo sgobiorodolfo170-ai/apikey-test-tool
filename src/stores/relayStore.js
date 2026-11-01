@@ -55,6 +55,7 @@ export const useRelayStore = defineStore('relay', {
     logs: [],
     logsLoading: false,
     stats: [],
+    tokenHistory: [],
   }),
   getters: {
     baseUrl: (state) => state.status?.baseUrl || `http://127.0.0.1:${state.port}/v1`,
@@ -356,7 +357,16 @@ export const useRelayStore = defineStore('relay', {
       const api = bridge()
       if (api?.clearStats) await api.clearStats()
       this.stats = []
+      this.tokenHistory = []
       useToastStore().addToast('已清空调用统计', 'info')
+    },
+
+    // 日 / 周 / 月图表：主进程按日持久化的 token 用量
+    async loadTokenHistory() {
+      const api = bridge()
+      if (!api?.tokenHistory) return
+      const result = await api.tokenHistory()
+      if (result?.ok) this.tokenHistory = result.history || []
     },
 
     // 表单里的模型下拉：先拉一次上游列表，不写入已保存的提供商

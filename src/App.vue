@@ -26,26 +26,36 @@
             :i="item.i"
             :min-w="item.minW"
             :min-h="item.minH"
-            :static="item.static"
             :drag-ignore-from="dragIgnoreFrom"
           >
-            <div class="relative h-full w-full">
-              <button
-                class="absolute top-2 right-2 z-10 w-7 h-7 flex items-center justify-center rounded-full text-sm transition-all"
-                :class="
-                  isPinned(item.i)
-                    ? 'bg-accent text-white shadow-elevated'
-                    : 'bg-surface-hover text-text-secondary opacity-50 hover:opacity-100'
-                "
-                :title="
-                  isPinned(item.i) ? '取消固定（恢复拖拽/调整大小）' : '固定卡片（锁定位置和尺寸）'
-                "
-                @mousedown.stop
-                @click.stop="togglePin(item.i)"
-              >
-                📌
-              </button>
-              <HistoryPanel v-if="item.i === 'history'" />
+            <div class="relative h-full w-full" :data-panel="item.i">
+              <HistoryPanel v-if="item.i === 'history'">
+                <template #actions>
+                  <button
+                    type="button"
+                    class="w-8 h-8 flex items-center justify-center rounded-full text-text-secondary hover:bg-surface-hover hover:text-accent transition-colors flex-shrink-0"
+                    :title="chatCollapsed ? '展开聊天测试卡片' : '折叠聊天测试卡片'"
+                    :aria-label="chatCollapsed ? '展开聊天测试卡片' : '折叠聊天测试卡片'"
+                    @click.stop="toggleChatCollapsed"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      class="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path v-if="chatCollapsed" d="M18 17l-5-5 5-5" />
+                      <path v-if="chatCollapsed" d="M11 17l-5-5 5-5" />
+                      <path v-if="!chatCollapsed" d="M6 17l5-5-5-5" />
+                      <path v-if="!chatCollapsed" d="M13 17l5-5-5-5" />
+                    </svg>
+                  </button>
+                </template>
+              </HistoryPanel>
               <ChatEvalPanel v-if="item.i === 'chateval'" />
               <!-- 自定义边把手：覆盖整条右/下边缘，悬停显示调整大小光标 -->
               <div class="vue-resizable-handle edge-handle edge-right"></div>
@@ -74,12 +84,21 @@ import HistoryPanel from './components/HistoryPanel.vue'
 import ChatEvalPanel from './components/ChatEvalPanel.vue'
 import ToastContainer from './components/Toast.vue'
 import { useHistoryStore } from './stores/historyStore.js'
+import { useUpdateStore } from './stores/updateStore.js'
 import { cancelAllRequests as cancelOpenAIRequests } from './api/openai.js'
 import { cancelAllRequests as cancelAnthropicRequests } from './api/anthropic.js'
 import { initStorage } from './utils/storage.js'
 
 const LAYOUT_KEY = 'dashboard-layout'
-const PINS_KEY = 'dashboard-pins'
+const COLLAPSE_KEY = 'dashboard-chat-collapsed'
+const COLLAPSE_WIDTH_KEY = 'dashboard-chat-collapsed-width'
+
+const HISTORY_PANEL_ID = 'history'
+const CHAT_PANEL_ID = 'chateval'
+
+// 折叠后窗口收窄：页面左右内边距 + 网格 margin 的估算值，实际以测量校正
+const CARD_FRAME = 60
+const COLLAPSED_CARD_MIN = 320
 
 const defaultLayout = [
   { i: 'history', x: 0, y: 0, w: 6, h: 10, minW: 2, minH: 4 },
@@ -145,17 +164,23 @@ function loadLayout() {
   return layout
 }
 
-function loadPins() {
+function loadChatCollapsed() {
   try {
-    const saved = localStorage.getItem(PINS_KEY)
-    if (saved) {
-      const arr = JSON.parse(saved)
-      if (Array.isArray(arr)) return arr.filter((id) => PANEL_IDS.has(id))
-    }
+    return localStorage.getItem(COLLAPSE_KEY) === '1'
   } catch (e) {
-    console.error('加载固定状态失败:', e)
+    console.error('加载折叠状态失败:', e)
   }
-  return []
+  return false
+}
+
+function loadCollapsedWidth() {
+  try {
+    const width = Number(localStorage.getItem(COLLAPSE_WIDTH_KEY))
+    return Number.isFinite(width) && width > 0 ? Math.round(width) : 0
+  } catch (e) {
+    console.error('加载折叠窗口宽度失败:', e)
+  }
+  return 0
 }
 
 function stripLayoutItem(item) {
@@ -190,19 +215,71 @@ export default {
   },
   setup() {
     const historyStore = useHistoryStore()
+    const updateStore = useUpdateStore()
     const savedLayout = ref(loadLayout())
-    const pinnedIds = ref(loadPins())
+    const chatCollapsed = ref(loadChatCollapsed())
+    const collapsedWindowWidth = ref(loadCollapsedWidth())
     const containerRef = ref(null)
     const rowHeight = ref(60)
 
-    const gridLayout = computed(() =>
-      savedLayout.value.map((item) => ({
-        ...item,
-        static: pinnedIds.value.includes(item.i),
-      })),
-    )
+    // 折叠聊天测试卡片时：只移除右侧卡片，左区卡片保持原有列宽与行高（不拉伸）。
+    // 真实布局仍保留在 savedLayout 中，展开时原样恢复。
+    const gridLayout = computed(() => {
+      if (!chatCollapsed.value) return savedLayout.value.map((item) => ({ ...item }))
+      return savedLayout.value
+        .filter((item) => item.i !== CHAT_PANEL_ID)
+        .map((item) => (item.i === HISTORY_PANEL_ID ? { ...item, x: 0 } : item))
+    })
 
-    const isPinned = (id) => pinnedIds.value.includes(id)
+    const historyCardEl = () =>
+      containerRef.value?.querySelector(`[data-panel="${HISTORY_PANEL_ID}"]`)
+
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+
+    // 折叠后把主窗口收窄到刚好容纳左区卡片：先按折叠前的卡片宽度估算，
+    // 等窗口重排后按实际渲染宽度补偿一次，保证卡片像素尺寸不变。
+    async function fitWindowToHistoryCard(cardWidth) {
+      const api = window.electronAPI
+      if (!api?.setWindowCollapsed) return
+      const target = Math.round(Math.max(COLLAPSED_CARD_MIN, cardWidth || 0) + CARD_FRAME)
+      const result = await api.setWindowCollapsed({ collapsed: true, width: target })
+      if (!result?.ok) return
+
+      await nextFrame()
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      const after = historyCardEl()?.getBoundingClientRect().width || 0
+      if (cardWidth && Math.abs(after - cardWidth) > 2) {
+        // setBounds 使用窗口外框宽度，校正时同样按 outerWidth 计算
+        await api.setWindowCollapsed({
+          collapsed: true,
+          width: Math.round((window.outerWidth || window.innerWidth) + (cardWidth - after)),
+        })
+      }
+      // 记住折叠时的窗口宽度（外框）：刷新或重启后按它恢复折叠窗口
+      collapsedWindowWidth.value = Math.round(window.outerWidth || window.innerWidth)
+      localStorage.setItem(COLLAPSE_WIDTH_KEY, String(collapsedWindowWidth.value))
+    }
+
+    const toggleChatCollapsed = async () => {
+      const api = window.electronAPI
+      const willCollapse = !chatCollapsed.value
+      const cardWidth = historyCardEl()?.getBoundingClientRect().width || 0
+
+      chatCollapsed.value = willCollapse
+      localStorage.setItem(COLLAPSE_KEY, willCollapse ? '1' : '0')
+      await nextTick()
+      applyScale()
+      scheduleSplitters()
+
+      if (!api?.setWindowCollapsed) return
+      if (willCollapse) {
+        await fitWindowToHistoryCard(cardWidth)
+      } else {
+        await api.setWindowCollapsed({ collapsed: false })
+        collapsedWindowWidth.value = 0
+        localStorage.removeItem(COLLAPSE_WIDTH_KEY)
+      }
+    }
 
     // 布局实际使用的最大列数（最右卡片的结束列）
     const gridCols = computed(() => {
@@ -224,15 +301,6 @@ export default {
         width: `calc(${(1200 / k).toFixed(4)}% - ${((12 / k - 1) * GRID_MARGIN[0]).toFixed(4)}px)`,
       }
     })
-
-    const togglePin = (id) => {
-      if (isPinned(id)) {
-        pinnedIds.value = pinnedIds.value.filter((p) => p !== id)
-      } else {
-        pinnedIds.value = [...pinnedIds.value, id]
-      }
-      localStorage.setItem(PINS_KEY, JSON.stringify(pinnedIds.value))
-    }
 
     // ---------- 卡片间分割线：左右拖动重新分配宽度 ----------
     const splitters = ref([])
@@ -341,6 +409,8 @@ export default {
 
     function onLayoutUpdated(newLayout) {
       scheduleSplitters()
+      // 折叠状态下的布局是派生出来的显示布局，不能写回真实布局
+      if (chatCollapsed.value) return
       const raw = newLayout.map(stripLayoutItem)
       const next = JSON.stringify(raw)
       // vue-grid-layout 在 layout prop 变化后会再次 emit layout-updated，
@@ -390,6 +460,9 @@ export default {
       window.addEventListener('error', errorHandler)
       window.addEventListener('unhandledrejection', rejectionHandler)
 
+      // 版本号与「更新」按钮显示在卡片头部，启动时统一检查一次更新
+      updateStore.check()
+
       if (!historyStore.initialized && !historyStore.loading) {
         historyStore.loadHistory()
       }
@@ -415,6 +488,14 @@ export default {
 
       await nextTick()
       scheduleSplitters()
+
+      // 折叠状态是持久化的：页面刷新或应用重启后，把窗口收窄到上次折叠时的宽度
+      if (chatCollapsed.value && collapsedWindowWidth.value) {
+        await window.electronAPI?.setWindowCollapsed?.({
+          collapsed: true,
+          width: collapsedWindowWidth.value,
+        })
+      }
     })
 
     onUnmounted(() => {
@@ -432,14 +513,13 @@ export default {
     return {
       gridLayout,
       onLayoutUpdated,
-      pinnedIds,
+      chatCollapsed,
+      toggleChatCollapsed,
       containerRef,
       rowHeight,
       GRID_MARGIN,
       dragIgnoreFrom: DRAG_IGNORE_FROM,
       gridWidthStyle,
-      isPinned,
-      togglePin,
       splitters,
       startSplitResize,
     }

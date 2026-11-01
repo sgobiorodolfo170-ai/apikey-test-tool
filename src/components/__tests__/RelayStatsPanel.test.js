@@ -78,9 +78,12 @@ describe('RelayStatsPanel', () => {
     expect(wrapper.text()).toContain('100ms')
     expect(wrapper.text()).toContain('30 tokens')
 
-    const failoverCell = wrapper.findAll('td').find((td) => td.text() === '是')
+    const failoverCell = wrapper.findAll('td').find((td) => td.text().startsWith('是'))
     expect(failoverCell).toBeTruthy()
+    // 故障转移“是/否”之后展示最终成功的 Key 尾号
+    expect(failoverCell.text()).toContain('…aaaaaa')
     expect(failoverCell.attributes('title')).toContain('…bbbbbb → …aaaaaa')
+    expect(failoverCell.attributes('title')).toContain('成功 Key …aaaaaa')
 
     wrapper.unmount()
   })

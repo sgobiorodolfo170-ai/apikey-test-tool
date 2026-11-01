@@ -1,20 +1,6 @@
 <template>
   <div class="flex-1 min-h-0 w-full overflow-y-auto flex flex-col" @scroll="closeDropdowns">
-    <div class="flex items-center justify-between border-b border-border pb-2 flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <span class="text-[14px] text-text-muted leading-none"
-          >v{{ updateStore.currentVersion }}</span
-        >
-        <button
-          v-if="updateStore.hasUpdate"
-          type="button"
-          class="text-[14px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 leading-none"
-          :title="`发现新版本 v${updateStore.latestVersion}，点击查看发布页`"
-          @click="openReleasePage"
-        >
-          ↑ 更新
-        </button>
-      </div>
+    <div class="flex items-center justify-end border-b border-border pb-2 flex-shrink-0">
       <button
         type="button"
         class="btn-ghost text-xs px-2 py-1"
@@ -358,7 +344,6 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
 import ResultPanel from './ResultPanel.vue'
-import { useUpdateStore } from '../stores/updateStore.js'
 import { useToastStore } from '../stores/toastStore.js'
 import { API_MODES, apiModeNeedsKey } from '../api/modes.js'
 import { readProviders, readProviderSettings, readHistory } from '../utils/storage.js'
@@ -369,7 +354,6 @@ export default {
   setup() {
     const testStore = useTestStore()
     const channelStore = useChannelStore()
-    const updateStore = useUpdateStore()
     const toastStore = useToastStore()
 
     const config = ref({
@@ -708,21 +692,8 @@ export default {
       },
     )
 
-    // 用系统浏览器打开发布页（主进程会校验域名）
-    const openReleasePage = () => {
-      const url = updateStore.releaseUrl
-      if (!url) return
-      const bridge = typeof window !== 'undefined' ? window.electronAPI : null
-      if (bridge?.openExternal) {
-        bridge.openExternal(url)
-      } else {
-        window.open(url, '_blank', 'noopener')
-      }
-    }
-
     onMounted(() => {
       if (!channelStore.initialized) channelStore.load()
-      updateStore.check()
       loadSavedProviders()
       document.addEventListener('mousedown', handleMousedownOutside)
       document.addEventListener('click', handleClickOutside)
@@ -753,8 +724,6 @@ export default {
       clearSelection,
       onTestSelected,
       saveAsChannel,
-      updateStore,
-      openReleasePage,
       contextMenu,
       onProviderChange,
       onTest,

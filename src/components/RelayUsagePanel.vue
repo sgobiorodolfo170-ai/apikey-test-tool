@@ -2,12 +2,14 @@
   <div class="flex flex-col h-full min-h-0 gap-2">
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 flex-shrink-0">
       <span class="text-[14px] text-text-muted flex-1 truncate">
-        共 {{ summary.calls }} 次调用 · tokens {{ formatNumber(summary.total) }}（输入
-        {{ formatNumber(summary.prompt) }} / 输出 {{ formatNumber(summary.completion) }}） · 每 2
-        秒刷新
+        共 {{ summary.calls }} 次调用 · tokens {{ formatTokenAmount(summary.total) }}（输入
+        {{ formatTokenAmount(summary.prompt) }} / 输出 {{ formatTokenAmount(summary.completion) }}）
+        · 每 2 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>
     </div>
+
+    <RelayTokenChart v-if="hasAnyUsage" />
 
     <div
       v-if="logs.length === 0"
@@ -115,6 +117,8 @@
 <script>
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
+import RelayTokenChart from './RelayTokenChart.vue'
+import { formatTokenAmount } from '../utils/tokenChart.js'
 
 function emptyRow(id, extra = {}) {
   return {
@@ -142,11 +146,15 @@ function addLog(row, log) {
 
 export default {
   name: 'RelayUsagePanel',
+  components: { RelayTokenChart },
   setup() {
     const relayStore = useRelayStore()
     let timer = null
 
     const logs = computed(() => relayStore.logs)
+
+    // 只要历史日志或按日统计任一有数据，就展示图表区
+    const hasAnyUsage = computed(() => relayStore.tokenHistory.length > 0 || logs.value.length > 0)
 
     const keyRows = computed(() => {
       const map = new Map()
@@ -185,8 +193,14 @@ export default {
       return result
     })
 
-    const refresh = () => relayStore.loadLogs()
-    const poll = () => relayStore.loadLogs({ withStatus: false, skipWhenHidden: true })
+    const refresh = async () => {
+      await relayStore.loadLogs()
+      await relayStore.loadTokenHistory()
+    }
+    const poll = async () => {
+      await relayStore.loadLogs({ withStatus: false, skipWhenHidden: true })
+      await relayStore.loadTokenHistory()
+    }
 
     const formatNumber = (value) => Number(value || 0).toLocaleString('zh-CN')
 
@@ -209,11 +223,13 @@ export default {
     return {
       relayStore,
       logs,
+      hasAnyUsage,
       keyRows,
       modelRows,
       summary,
       refresh,
       formatNumber,
+      formatTokenAmount,
       shortTime,
     }
   },

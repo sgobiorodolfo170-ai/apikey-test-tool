@@ -1,7 +1,9 @@
 <template>
   <div class="card p-6 flex flex-col h-full w-full">
-    <div class="flex items-center justify-between border-b border-border pb-2 mb-3 flex-shrink-0">
-      <div class="flex flex-wrap gap-1">
+    <div
+      class="flex items-center justify-between gap-2 border-b border-border pb-2 mb-3 flex-shrink-0"
+    >
+      <div class="flex flex-wrap gap-1 min-w-0">
         <button
           type="button"
           class="px-2.5 py-1 text-sm rounded-card transition-colors"
@@ -75,13 +77,21 @@
           配置
         </button>
       </div>
-      <button
-        v-if="activeTab === 'history' && historyStore.records.length > 0"
-        class="btn-danger text-xs px-2 py-1"
-        @click="handleClear"
-      >
-        清空
-      </button>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="text-[14px] text-text-muted leading-none"
+          >v{{ updateStore.currentVersion }}</span
+        >
+        <button
+          v-if="updateStore.hasUpdate"
+          type="button"
+          class="text-[14px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 leading-none"
+          :title="`发现新版本 v${updateStore.latestVersion}，点击查看发布页`"
+          @click="openReleasePage"
+        >
+          ↑ 更新
+        </button>
+        <slot name="actions"></slot>
+      </div>
     </div>
 
     <template v-if="activeTab === 'history'">
@@ -207,6 +217,7 @@ import { useTestStore } from '../stores/testStore.js'
 import { useChannelStore } from '../stores/channelStore.js'
 import { useRelayStore } from '../stores/relayStore.js'
 import { useToastStore } from '../stores/toastStore.js'
+import { useUpdateStore } from '../stores/updateStore.js'
 import { apiModeLabel } from '../api/modes.js'
 import { SCORE_VERSION } from '../utils/report.js'
 import ChannelPanel from './ChannelPanel.vue'
@@ -224,14 +235,22 @@ export default {
     const channelStore = useChannelStore()
     const relayStore = useRelayStore()
     const toastStore = useToastStore()
+    const updateStore = useUpdateStore()
     const activeTab = ref('history')
     const requestCount = computed(
       () => new Set(relayStore.logs.map((item) => item.requestId).filter(Boolean)).size,
     )
 
-    const handleClear = async () => {
-      if (!confirm('确定要清空所有历史记录吗？')) return
-      await historyStore.clearAll()
+    // 用系统浏览器打开发布页（主进程会校验域名）
+    const openReleasePage = () => {
+      const url = updateStore.releaseUrl
+      if (!url) return
+      const bridge = typeof window !== 'undefined' ? window.electronAPI : null
+      if (bridge?.openExternal) {
+        bridge.openExternal(url)
+      } else {
+        window.open(url, '_blank', 'noopener')
+      }
     }
 
     // 把历史里的提供商一键加入中转站（中转站只说 OpenAI 协议）
@@ -337,9 +356,10 @@ export default {
       testStore,
       channelStore,
       relayStore,
+      updateStore,
+      openReleasePage,
       activeTab,
       requestCount,
-      handleClear,
       handleDelete,
       handleReload,
       addToRelay,

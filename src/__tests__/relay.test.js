@@ -286,6 +286,25 @@ describe('中转服务（端到端）', () => {
     })
   })
 
+  it('aggregates daily token usage for charts', async () => {
+    relay.clearStats()
+    const response = await fetch(`http://127.0.0.1:${relayInfo.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'm-daily', messages: [] }),
+    })
+    expect(response.status).toBe(200)
+    await response.json()
+
+    const history = relay.getTokenHistory()
+    expect(history).toHaveLength(1)
+    expect(history[0].total).toBe(12)
+    expect(history[0].prompt).toBe(7)
+    expect(history[0].completion).toBe(5)
+    expect(history[0].calls).toBe(1)
+    expect(history[0].models[0]).toMatchObject({ model: 'm-daily', total: 12 })
+  })
+
   it('falls back to the only provider for unknown model names', async () => {
     const response = await fetch(`http://127.0.0.1:${relayInfo.port}/v1/chat/completions`, {
       method: 'POST',
@@ -628,10 +647,14 @@ describe('日志与统计持久化', () => {
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
     expect(saved.stats.length).toBeGreaterThan(0)
     expect(saved.logs.length).toBeGreaterThan(0)
+    expect(saved.daily.length).toBeGreaterThan(0)
 
     relay.attachStorage(file)
     expect(relay.getStats().length).toBeGreaterThan(0)
     expect(relay.getLogs().length).toBeGreaterThan(0)
+    const history = relay.getTokenHistory()
+    expect(history.length).toBeGreaterThan(0)
+    expect(history.at(-1).total).toBeGreaterThan(0)
   })
 })
 

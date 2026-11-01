@@ -38,7 +38,7 @@
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">请求状态</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">成功率</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">总调用</th>
-            <th class="px-2 py-1.5 font-medium whitespace-nowrap">故障转移（Key）</th>
+            <th class="px-2 py-1.5 font-medium whitespace-nowrap">故障转移 / 成功 Key</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">延迟</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">时间</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">本次用量</th>
@@ -95,6 +95,10 @@
               :title="keyChainTitle(row)"
             >
               {{ row.failover ? '是' : '否' }}
+              <template v-if="row.successKeyTail">
+                <span class="text-text-muted"> · </span>
+                <code class="text-[13px] text-success">…{{ shortKey(row.successKeyTail) }}</code>
+              </template>
             </td>
             <td class="px-2 py-1.5 whitespace-nowrap" :title="`尝试 ${row.attempts} 次`">
               {{ row.ms }}ms
@@ -141,9 +145,14 @@ export default {
           const last = logs[logs.length - 1] || {}
           const keyTails = [...new Set(logs.map((item) => item.keyTail).filter(Boolean))]
           const success = Boolean(last.at) && !last.error && last.status >= 200 && last.status < 400
-          const attemptSuccess = logs.filter(
+          const successLogs = logs.filter(
             (item) => !item.error && item.status >= 200 && item.status < 400,
-          ).length
+          )
+          const attemptSuccess = successLogs.length
+          // 最终成功那一次尝试使用的 Key，用于在“故障转移”列后展示
+          const successKeyTail = successLogs.length
+            ? successLogs[successLogs.length - 1].keyTail || ''
+            : ''
           const totalMs = logs.reduce((sum, item) => sum + (Number(item.ms) || 0), 0)
           const client = logs
             .map((item) => item.client)
@@ -159,6 +168,7 @@ export default {
             attemptSuccess,
             rate: group.attempts > 0 ? Math.round((attemptSuccess / group.attempts) * 100) : 0,
             keyTails,
+            successKeyTail,
             success,
             ms: totalMs,
             at: last.at,
@@ -215,15 +225,17 @@ export default {
       return 'text-danger'
     }
 
-    const keyChain = (row) =>
-      row.keyTails.length > 0
-        ? row.keyTails.map((tail) => `…${String(tail).slice(-6)}`).join(' → ')
-        : '—'
+    const shortKey = (tail) => String(tail || '').slice(-6)
 
-    const keyChainTitle = (row) =>
-      row.keyTails.length > 0
-        ? `尝试 ${row.attempts} 次 · Key 尾号 ${keyChain(row)}`
-        : `尝试 ${row.attempts} 次`
+    const keyChain = (row) =>
+      row.keyTails.length > 0 ? row.keyTails.map((tail) => `…${shortKey(tail)}`).join(' → ') : '—'
+
+    const keyChainTitle = (row) => {
+      const parts = [`尝试 ${row.attempts} 次`]
+      if (row.keyTails.length > 0) parts.push(`Key 尾号 ${keyChain(row)}`)
+      if (row.successKeyTail) parts.push(`成功 Key …${shortKey(row.successKeyTail)}`)
+      return parts.join(' · ')
+    }
 
     const shortTime = (iso) => {
       const date = new Date(iso)
@@ -260,6 +272,7 @@ export default {
       rateClass,
       keyChain,
       keyChainTitle,
+      shortKey,
       shortTime,
       usageText,
       usageTitle,

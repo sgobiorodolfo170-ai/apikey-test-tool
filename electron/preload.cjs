@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 用系统浏览器打开外部链接（主进程会校验域名）
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
+  // 折叠聊天测试卡片：主窗口临时收窄到左区卡片宽度，展开时恢复原尺寸
+  setWindowCollapsed: (payload) => ipcRenderer.invoke('window-set-collapsed', payload),
+
   // 中转站：本地 OpenAI 兼容聚合端点
   relay: {
     start: (config) => ipcRenderer.invoke('relay-start', config),
@@ -47,6 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clearLogs: () => ipcRenderer.invoke('relay-clear-logs'),
     stats: () => ipcRenderer.invoke('relay-stats'),
     clearStats: () => ipcRenderer.invoke('relay-stats-clear'),
+    tokenHistory: () => ipcRenderer.invoke('relay-token-history'),
   },
 
   // 密钥加密存储（Electron safeStorage）
