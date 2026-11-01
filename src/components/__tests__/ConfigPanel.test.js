@@ -92,13 +92,13 @@ describe('ConfigPanel', () => {
     expect(testBtn[0].attributes('disabled')).toBeUndefined()
   })
 
-  it('should render single model test section', () => {
-    expect(wrapper.text()).toContain('指定模型测试')
-    expect(wrapper.text()).toContain('测试该模型')
-    expect(wrapper.find('input[placeholder="从检测出的模型中选择或手动输入"]').exists()).toBe(true)
+  it('should not render the removed single model test section', () => {
+    expect(wrapper.text()).not.toContain('指定模型测试')
+    expect(wrapper.text()).not.toContain('测试该模型')
+    expect(wrapper.find('input[placeholder="从检测出的模型中选择或手动输入"]').exists()).toBe(false)
     expect(
       wrapper.findAll('button').filter((b) => b.attributes('title') === '展开模型列表').length,
-    ).toBe(1)
+    ).toBe(0)
   })
 
   it('should show loading state while fetching models', async () => {
@@ -127,22 +127,6 @@ describe('ConfigPanel', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
-  it('should disable single model test button when no model specified', () => {
-    const btn = wrapper.findAll('button').filter((b) => b.text() === '测试该模型')
-    expect(btn.length).toBe(1)
-    expect(btn[0].attributes('disabled')).toBeDefined()
-  })
-
-  it('should enable single model test button after specifying a model', async () => {
-    wrapper.vm.config.baseUrl = 'https://api.openai.com/v1'
-    wrapper.vm.config.apiKey = 'sk-test'
-    wrapper.vm.modelToTest = 'gpt-4'
-    await wrapper.vm.$nextTick()
-
-    const btn = wrapper.findAll('button').filter((b) => b.text() === '测试该模型')
-    expect(btn[0].attributes('disabled')).toBeUndefined()
-  })
-
   it('should call testSingleModel when quick test on a detected model is clicked', async () => {
     const spy = vi.spyOn(testStore, 'testSingleModel').mockResolvedValue({ success: true })
     testStore.setAvailableModels(['gpt-4', 'gpt-3.5-turbo'])
@@ -163,45 +147,6 @@ describe('ConfigPanel', () => {
     )
   })
 
-  it('should call testSingleModel from the specify-model input', async () => {
-    const spy = vi.spyOn(testStore, 'testSingleModel').mockResolvedValue({ success: true })
-    wrapper.vm.config.baseUrl = 'https://api.openai.com/v1'
-    wrapper.vm.config.apiKey = 'sk-test'
-    wrapper.vm.modelToTest = '  gpt-4  '
-    await wrapper.vm.$nextTick()
-
-    const btn = wrapper.findAll('button').filter((b) => b.text() === '测试该模型')
-    await btn[0].trigger('click')
-
-    expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy).toHaveBeenCalledWith(expect.anything(), 'gpt-4')
-  })
-
-  it('should fill the specify-model input when a detected model is clicked', async () => {
-    testStore.setAvailableModels(['gpt-4'])
-    await wrapper.vm.$nextTick()
-
-    const nameSpan = wrapper.findAll('span').find((s) => s.text() === 'gpt-4')
-    expect(nameSpan).toBeDefined()
-    await nameSpan.trigger('click')
-
-    expect(wrapper.vm.modelToTest).toBe('gpt-4')
-  })
-
-  it('should fill the specify-model input when quick testing a detected model', async () => {
-    const spy = vi.spyOn(testStore, 'testSingleModel').mockResolvedValue({ success: true })
-    testStore.setAvailableModels(['gpt-4'])
-    wrapper.vm.config.baseUrl = 'https://api.openai.com/v1'
-    wrapper.vm.config.apiKey = 'sk-test'
-    await wrapper.vm.$nextTick()
-
-    const quickTest = wrapper.findAll('span').filter((s) => s.text() === '⚡')
-    await quickTest[0].trigger('click')
-
-    expect(wrapper.vm.modelToTest).toBe('gpt-4')
-    expect(spy).toHaveBeenCalled()
-  })
-
   it('should autofill base url and api mode when a saved provider is selected', async () => {
     vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
     readProviderSettings.mockResolvedValue({
@@ -217,6 +162,19 @@ describe('ConfigPanel', () => {
     expect(readProviderSettings).toHaveBeenCalledWith('my-gemini')
     expect(wrapper.vm.config.baseUrl).toBe('https://generativelanguage.googleapis.com')
     expect(wrapper.vm.config.apiMode).toBe('gemini')
+  })
+
+  it('allows saving the config even without a test result', async () => {
+    const saveSpy = vi.spyOn(testStore, 'saveResult').mockResolvedValue()
+    testStore.hasResult = false
+    testStore.currentResult = null
+
+    const button = wrapper.findAll('button').find((b) => b.text() === '保存结果')
+    expect(button).toBeTruthy()
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(saveSpy).toHaveBeenCalled()
   })
 
   it('should refresh the saved provider list after saving a result', async () => {
@@ -239,25 +197,6 @@ describe('ConfigPanel', () => {
 
     const testBtn = wrapper.findAll('button').filter((b) => b.text() === '开始测试')
     expect(testBtn[0].attributes('disabled')).toBeUndefined()
-  })
-
-  it('should list all detected models when the model dropdown is opened', async () => {
-    testStore.setAvailableModels(['gpt-4', 'gpt-4o'])
-    await wrapper.vm.$nextTick()
-
-    const toggle = wrapper.findAll('button').filter((b) => b.attributes('title') === '展开模型列表')
-    expect(toggle.length).toBe(1)
-    await toggle[0].trigger('mousedown')
-    await wrapper.vm.$nextTick()
-
-    const options = wrapper
-      .findAll('button')
-      .filter((b) => ['gpt-4', 'gpt-4o'].includes(b.text().trim()))
-    expect(options.length).toBe(2)
-
-    await options[0].trigger('click')
-    expect(wrapper.vm.modelToTest).toBe('gpt-4')
-    expect(wrapper.vm.modelDropdown.visible).toBe(false)
   })
 
   it('should list saved providers when the provider dropdown is opened', async () => {

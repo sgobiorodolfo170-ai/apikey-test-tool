@@ -86,9 +86,26 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "ico/icon-256x256.png"
+    },
+    "portable": {
+      "artifactName": "APIKeyTester-${version}-portable-${arch}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "APIKeyTester-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "APIKey测试工具"
     },
     "mac": {
       "target": [

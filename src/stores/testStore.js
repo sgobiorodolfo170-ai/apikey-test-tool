@@ -320,9 +320,13 @@ export const useTestStore = defineStore('test', {
       const toastStore = useToastStore()
       const historyStore = useHistoryStore()
 
-      if (!this.currentResult) {
-        toastStore.addToast('没有可保存的结果', 'warning')
-        return
+      // 没有测试结果时也允许保存当前配置（记录标记为未测试）
+      const result = this.currentResult || {
+        connected: false,
+        connectTime: 0,
+        models: [],
+        summary: { success: 0, failed: 0, avgLatency: 0 },
+        untested: true,
       }
 
       try {
@@ -341,10 +345,11 @@ export const useTestStore = defineStore('test', {
             apiKey: config.apiKey,
           },
           result: {
-            connected: this.currentResult.connected,
-            connectTime: this.currentResult.connectTime,
-            models: this.currentResult.models,
-            summary: this.currentResult.summary,
+            connected: result.connected,
+            connectTime: result.connectTime,
+            models: result.models,
+            summary: result.summary,
+            ...(result.untested ? { untested: true } : {}),
           },
         }
 
@@ -354,7 +359,7 @@ export const useTestStore = defineStore('test', {
           return
         }
         historyStore.refresh()
-        toastStore.addToast('结果已保存', 'success')
+        toastStore.addToast(result.untested ? '配置已保存（未测试）' : '结果已保存', 'success')
       } catch (error) {
         console.error('保存失败:', error)
         toastStore.addToast('保存失败: ' + error.message, 'error')

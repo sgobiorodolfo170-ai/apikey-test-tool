@@ -1,6 +1,7 @@
 const {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   net,
   safeStorage,
@@ -17,6 +18,7 @@ const { spawn } = require('child_process')
 const relay = require('./relay.cjs')
 const { isPathSafe: isPathInside } = require('./lib/path-safety.cjs')
 const { normalizeWindowBounds } = require('./lib/window-bounds.cjs')
+const { resolveDataDir, migrateDataFiles } = require('./lib/data-dir.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
 if (process.env.APKEY_USER_DATA_DIR) {
@@ -24,10 +26,25 @@ if (process.env.APKEY_USER_DATA_DIR) {
 }
 
 const USER_DATA_PATH = app.getPath('userData')
+const DATA_LOCATION_FILE = path.join(USER_DATA_PATH, 'data-location.json')
 
-// 仅允许访问 userData 目录内的路径（实现在 lib/path-safety.cjs，便于单测）
+function readDataDirSetting() {
+  try {
+    // 兼容手工编辑/外挂工具写出的带 BOM 的 JSON
+    const text = fs.readFileSync(DATA_LOCATION_FILE, 'utf-8').replace(/^\uFEFF/, '')
+    const raw = JSON.parse(text)
+    return raw?.dir || ''
+  } catch {
+    return ''
+  }
+}
+
+// 项目数据目录：默认 userData，可在设置中切换；应用配置与窗口状态仍留在 userData
+let dataDir = resolveDataDir(USER_DATA_PATH, readDataDirSetting())
+
+// 仅允许访问数据目录内的路径（实现在 lib/path-safety.cjs，便于单测）
 function isPathSafe(targetPath) {
-  return isPathInside(USER_DATA_PATH, targetPath)
+  return isPathInside(dataDir, targetPath)
 }
 
 let mainWindow = null
@@ -36,7 +53,7 @@ let quitting = false
 // 页面加载失败后的自动重试次数（成功后归零）
 let loadRetries = 0
 
-const RELAY_CONFIG_FILE = path.join(USER_DATA_PATH, 'relay.json')
+const RELAY_CONFIG_FILE = path.join(dataDir, 'relay.json')
 const APP_SETTINGS_FILE = path.join(USER_DATA_PATH, 'app-settings.json')
 const DEFAULT_APP_SETTINGS = { tray: true, autoLaunch: false }
 let appSettings = { ...DEFAULT_APP_SETTINGS }
@@ -57,6 +74,9 @@ const eventListeners = {
 // IPC 处理函数列表
 const ipcHandlers = [
   'get-user-data-path',
+  'get-data-dir',
+  'choose-data-dir',
+  'window-set-size',
   'read-file',
   'write-file',
   'exists-file',
@@ -84,8 +104,7 @@ const activeHttpRequests = new Map()
 const HTTP_DEFAULT_TIMEOUT = 30000
 
 function getLogFilePath() {
-  const userDataPath = app.getPath('userData')
-  return path.join(userDataPath, LOG_FILE)
+  return path.join(dataDir, LOG_FILE)
 }
 
 function formatDate() {
@@ -107,8 +126,8 @@ function debounce(fn, delay) {
   }
 }
 
-const MIN_WINDOW_WIDTH = 900
-const MIN_WINDOW_HEIGHT = 600
+const MIN_WINDOW_WIDTH = 420
+const MIN_WINDOW_HEIGHT = 320
 const COLLAPSED_MIN_WIDTH = 320
 
 // 折叠聊天测试卡片时窗口会临时缩小：记录原始 bounds 与最大化状态，展开时原样恢复。
@@ -853,6 +872,8 @@ function createWindow() {
     ...(state.maximized ? {} : { x: state.x, y: state.y }),
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
+    // 窗口尺寸由卡片尺寸驱动，禁用用户手动拖拽窗口边缘（也避免系统显示尺寸提示）
+    resizable: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -1015,7 +1036,7 @@ function registerAppLifecycle() {
   app.whenReady().then(() => {
     appSettings = loadAppSettings()
     // 恢复上次的调用日志与统计，并挂载持久化文件
-    relay.attachStorage(path.join(USER_DATA_PATH, 'relay-usage.json'))
+    relay.attachStorage(path.join(dataDir, 'relay-usage.json'))
     try {
       if (app.isPackaged) {
         app.setLoginItemSettings({ openAtLogin: Boolean(appSettings.autoLaunch) })
@@ -1087,12 +1108,71 @@ if (!ISOLATED_RUN && !app.requestSingleInstanceLock()) {
 }
 
 ipcMain.handle('get-user-data-path', () => {
-  return app.getPath('userData')
+  return dataDir
+})
+
+ipcMain.handle('get-data-dir', async () => ({
+  ok: true,
+  dataDir,
+  defaultDir: USER_DATA_PATH,
+}))
+
+// 选择新的数据目录：先把现有数据复制过去，再切换主进程与中转站的读写路径。
+// 目标目录已有同名数据文件时保留目标（便于切回旧目录或从备份恢复）。
+ipcMain.handle('choose-data-dir', async () => {
+  try {
+    const options = {
+      title: '选择数据目录',
+      defaultPath: dataDir,
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const result =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths?.[0]) return { ok: false, canceled: true }
+
+    const target = path.resolve(result.filePaths[0])
+    if (target === path.resolve(dataDir)) return { ok: true, dataDir, unchanged: true }
+
+    // 中转站内存里的最新日志 / 统计先同步落盘，避免迁移时丢数据
+    await relay.persistNow()
+    const migration = migrateDataFiles(dataDir, target)
+    fs.writeFileSync(DATA_LOCATION_FILE, JSON.stringify({ dir: target }, null, 2), 'utf-8')
+    dataDir = target
+    relay.attachStorage(path.join(dataDir, 'relay-usage.json'))
+    return { ok: true, dataDir, ...migration }
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
 })
 
 ipcMain.handle('window-set-collapsed', async (event, payload) => {
   try {
     return setCollapsedWindow(payload)
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+})
+
+// 卡片尺寸变化后让主窗口跟随：窗口边界与卡片保持固定间距
+ipcMain.handle('window-set-size', async (event, payload) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+  const width = Math.round(Number(payload?.width) || 0)
+  const height = Math.round(Number(payload?.height) || 0)
+  if (width < MIN_WINDOW_WIDTH || height < MIN_WINDOW_HEIGHT) {
+    return { ok: false, error: 'invalid size' }
+  }
+  try {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    const bounds = mainWindow.getBounds()
+    const area = screen.getDisplayMatching(bounds).workArea
+    const w = Math.min(width, area.width)
+    const h = Math.min(height, area.height)
+    const x = Math.min(Math.max(bounds.x, area.x), area.x + area.width - w)
+    const y = Math.min(Math.max(bounds.y, area.y), area.y + area.height - h)
+    mainWindow.setBounds({ x, y, width: w, height: h })
+    return { ok: true, width: w, height: h }
   } catch (error) {
     return { ok: false, error: error.message }
   }

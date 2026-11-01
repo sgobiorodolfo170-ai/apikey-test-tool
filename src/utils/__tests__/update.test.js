@@ -86,6 +86,42 @@ describe('fetchLatestRelease', () => {
     http.get.mockRejectedValue(new Error('429 rate limited'))
     await expect(fetchLatestRelease()).rejects.toThrow('429')
   })
+
+  it('uses direct fetch in the desktop renderer', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ tag_name: 'v1.9.0', html_url: 'https://github.com/a/b' }),
+    }))
+    window.electronAPI = { request: vi.fn() }
+
+    try {
+      const release = await fetchLatestRelease()
+      expect(release.version).toBe('1.9.0')
+      expect(http.get).not.toHaveBeenCalled()
+    } finally {
+      delete window.electronAPI
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('falls back to the http facade when direct fetch fails', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error('blocked')
+    })
+    window.electronAPI = { request: vi.fn() }
+    http.get.mockResolvedValue({ data: { tag_name: 'v1.8.0', html_url: 'https://x' } })
+
+    try {
+      const release = await fetchLatestRelease()
+      expect(release.version).toBe('1.8.0')
+      expect(http.get).toHaveBeenCalledTimes(1)
+    } finally {
+      delete window.electronAPI
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 describe('isNewerVersion', () => {

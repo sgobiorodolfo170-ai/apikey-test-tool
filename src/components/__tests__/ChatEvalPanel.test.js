@@ -62,7 +62,7 @@ describe('ChatEvalPanel', () => {
   })
 
   it('renders children without their own card chrome', async () => {
-    // embedded 模式下子组件不再带 card 类
-    expect(wrapper.findAll('.card')).toHaveLength(1)
+    // embedded 模式下子组件不再带 card 类（整卡由 App 提供）
+    expect(wrapper.findAll('.card')).toHaveLength(0)
   })
 })

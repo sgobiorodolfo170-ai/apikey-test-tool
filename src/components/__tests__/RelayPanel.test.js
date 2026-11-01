@@ -272,16 +272,8 @@ describe('RelayPanel 日志与排序', () => {
     await flushPromises()
   })
 
-  it('renders a collapsed request log section', () => {
-    expect(wrapper.text()).toContain('请求日志')
-  })
-
-  it('shows log entries once loaded', async () => {
-    await store.loadLogs()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('gpt-4o')
-    expect(wrapper.text()).toContain('34ms')
+  it('no longer renders the request log section', () => {
+    expect(wrapper.text()).not.toContain('请求日志')
   })
 
   it('offers up/down controls for failover order', async () => {

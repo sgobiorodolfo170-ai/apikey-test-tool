@@ -37,9 +37,6 @@
             <div class="text-sm font-medium text-text-primary truncate" :title="channel.name">
               {{ channel.name }}
             </div>
-            <div class="text-xs text-text-muted truncate" :title="channel.baseUrl">
-              {{ modeLabel(channel.apiMode) }} · {{ channel.baseUrl }}
-            </div>
           </div>
           <div class="text-right flex-shrink-0">
             <div
@@ -56,25 +53,30 @@
           </div>
         </div>
 
-        <div class="flex gap-1 mt-2">
-          <button
-            class="btn-ghost text-xs px-2 py-0.5"
-            title="填入配置面板"
-            @click="useChannel(channel)"
-          >
-            使用
-          </button>
-          <button
-            class="btn-primary text-xs px-2 py-0.5"
-            :disabled="checkingId !== null"
-            :title="'对该渠道跑一次完整体检'"
-            @click="checkChannel(channel)"
-          >
-            {{ checkingId === channel.id ? '体检中' : '体检' }}
-          </button>
-          <button class="btn-danger text-xs px-2 py-0.5" @click="removeChannel(channel)">
-            删除
-          </button>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <div class="text-xs text-text-muted truncate min-w-0" :title="channel.baseUrl">
+            {{ modeLabel(channel.apiMode) }} · {{ channel.baseUrl }}
+          </div>
+          <div class="flex gap-1 flex-shrink-0">
+            <button
+              class="btn-ghost text-xs px-2 py-0.5"
+              title="填入配置面板"
+              @click="useChannel(channel)"
+            >
+              使用
+            </button>
+            <button
+              class="btn-primary text-xs px-2 py-0.5"
+              :disabled="checkingId !== null"
+              :title="'对该渠道跑一次完整体检'"
+              @click="checkChannel(channel)"
+            >
+              {{ checkingId === channel.id ? '体检中' : '体检' }}
+            </button>
+            <button class="btn-danger text-xs px-2 py-0.5" @click="removeChannel(channel)">
+              删除
+            </button>
+          </div>
         </div>
 
         <div v-if="checkingId === channel.id" class="text-[14px] text-text-muted mt-1 truncate">

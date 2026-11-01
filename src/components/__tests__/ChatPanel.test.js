@@ -59,12 +59,16 @@ describe('ChatPanel 图片输入', () => {
     }))
   })
 
-  it('renders the image button and a hidden file input', async () => {
+  it('renders the add button and a hidden file input', async () => {
     const { wrapper } = await mountPanel()
 
     expect(wrapper.find('input[type="file"]').exists()).toBe(true)
-    expect(wrapper.find('input[type="file"]').attributes('accept')).toContain('image/png')
-    expect(wrapper.findAll('button').some((b) => b.text() === '🖼')).toBe(true)
+    // 不限制文件类型，图片与文本文件都可以选
+    expect(wrapper.find('input[type="file"]').attributes('accept')).toBeUndefined()
+    expect(
+      wrapper.findAll('button').some((b) => b.attributes('title')?.includes('添加图片或文件')),
+    ).toBe(true)
+    expect(wrapper.find('button[title^="添加图片或文件"] svg path').exists()).toBe(true)
   })
 
   it('adds picked images to the attachment strip', async () => {
@@ -158,18 +162,34 @@ describe('ChatPanel 图片输入', () => {
 
   it('blocks images in modes without vision support', async () => {
     const { wrapper } = await mountPanel('openai-image')
-    const chatStore = useChatStore()
 
     await wrapper.vm.onFilesPicked({ target: { files: [makeFile('cat.png')], value: '' } })
     await flushPromises()
-    wrapper.vm.chatInput = '看图'
-    await wrapper.vm.sendMessage()
+
+    expect(wrapper.vm.attachments).toHaveLength(0)
+    expect(useToastStore().toasts.at(-1).message).toContain('不支持图片输入')
+  })
+
+  it('appends text file content to the chat input', async () => {
+    const { wrapper } = await mountPanel()
+    const file = new File(['hello notes'], 'notes.md', { type: 'text/markdown' })
+
+    await wrapper.vm.onFilesPicked({ target: { files: [file], value: '' } })
     await flushPromises()
 
-    expect(chatMock).not.toHaveBeenCalled()
-    expect(chatStore.messages).toHaveLength(0)
-    expect(useToastStore().toasts.at(-1).message).toContain('不支持图片输入')
-    // 附件保留，方便用户切换模式后重发
-    expect(wrapper.vm.attachments).toHaveLength(1)
+    expect(wrapper.vm.attachments).toHaveLength(0)
+    expect(wrapper.vm.chatInput).toContain('【文件 notes.md】')
+    expect(wrapper.vm.chatInput).toContain('hello notes')
+  })
+
+  it('shows a toast for unsupported binary files', async () => {
+    const { wrapper } = await mountPanel()
+    const file = makeFile('archive.zip', 'application/zip')
+
+    await wrapper.vm.onFilesPicked({ target: { files: [file], value: '' } })
+    await flushPromises()
+
+    expect(wrapper.vm.attachments).toHaveLength(0)
+    expect(useToastStore().toasts.at(-1).message).toContain('不支持的文件类型')
   })
 })

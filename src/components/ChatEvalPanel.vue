@@ -1,5 +1,5 @@
 <template>
-  <div class="card p-4 flex flex-col h-full w-full">
+  <div class="p-4 flex flex-col h-full w-full">
     <div class="flex items-center gap-1 border-b border-border pb-2 mb-2 flex-shrink-0">
       <button
         v-for="tab in TABS"

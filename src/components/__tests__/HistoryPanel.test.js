@@ -218,6 +218,17 @@ describe('HistoryPanel 版本与更新', () => {
     expect(updateButton.attributes('title')).toContain('99.0.0')
   })
 
+  it('opens the settings dialog from the header button', async () => {
+    const button = wrapper.find('button[title="设置"]')
+    expect(button.exists()).toBe(true)
+
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('数据目录')
+  })
+
   it('opens the release page through the bridge', async () => {
     const openExternal = vi.fn(async () => ({ success: true }))
     window.electronAPI = { ...(window.electronAPI || {}), openExternal }

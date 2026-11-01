@@ -27,6 +27,8 @@ vi.mock('../../utils/storage.js', () => ({
 }))
 
 import { useTestStore } from '../testStore.js'
+import { useHistoryStore } from '../historyStore.js'
+import { saveTestRecord } from '../../utils/storage.js'
 import { testModelLatency, listOpenAIModels } from '../../api/openai.js'
 import { testAnthropicModelLatency } from '../../api/anthropic.js'
 
@@ -170,5 +172,36 @@ describe('testStore.fetchModels', () => {
 
     expect(store.availableModels).toEqual(['fast-model'])
     expect(store.isFetchingModels).toBe(false)
+  })
+})
+
+describe('testStore.saveResult', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('saves an untested config record when there is no test result', async () => {
+    const store = useTestStore()
+    const historyStore = useHistoryStore()
+    vi.spyOn(historyStore, 'refresh').mockImplementation(() => {})
+    saveTestRecord.mockResolvedValue(true)
+
+    store.currentResult = null
+    store.hasResult = false
+
+    await store.saveResult(mockConfig)
+
+    expect(saveTestRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ provider: 'test-provider' }),
+        result: expect.objectContaining({
+          untested: true,
+          connected: false,
+          models: [],
+        }),
+      }),
+    )
+    expect(historyStore.refresh).toHaveBeenCalled()
   })
 })

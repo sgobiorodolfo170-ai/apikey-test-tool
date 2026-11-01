@@ -193,11 +193,7 @@
             >
               {{ isSelected(model) ? '✓' : '' }}
             </span>
-            <span
-              class="px-2 py-1 cursor-pointer hover:bg-blue-700"
-              title="点击填入指定模型测试框"
-              @click="selectModel(model)"
-            >
+            <span class="px-2 py-1" :title="model">
               {{ model.length > 20 ? model.substring(0, 20) + '...' : model }}
             </span>
             <span
@@ -233,66 +229,6 @@
       </div>
     </div>
 
-    <div>
-      <label class="label">指定模型测试</label>
-      <div class="flex gap-2">
-        <div ref="modelFieldRef" class="relative flex-1">
-          <input
-            ref="modelToTestInput"
-            v-model="modelToTest"
-            type="text"
-            placeholder="从检测出的模型中选择或手动输入"
-            class="input w-full pr-8"
-            @contextmenu.prevent="showContextMenu($event, 'modelToTest')"
-          />
-          <button
-            type="button"
-            class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-text-secondary hover:text-text-primary"
-            title="展开模型列表"
-            @mousedown.stop.prevent="toggleModelDropdown"
-          >
-            ▾
-          </button>
-          <Teleport to="body">
-            <div
-              v-if="modelDropdown.visible"
-              class="fixed z-50 bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 max-h-64 overflow-y-auto"
-              :style="{
-                left: modelDropdown.x + 'px',
-                top: modelDropdown.y + 'px',
-                width: modelDropdown.width + 'px',
-              }"
-            >
-              <div
-                v-if="testStore.availableModels.length === 0"
-                class="px-3 py-2 text-text-muted text-sm"
-              >
-                暂无检测到的模型
-              </div>
-              <button
-                v-for="model in testStore.availableModels"
-                :key="model"
-                type="button"
-                class="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-hover truncate"
-                @mousedown.stop.prevent
-                @click="selectModel(model)"
-              >
-                {{ model }}
-              </button>
-            </div>
-          </Teleport>
-        </div>
-        <button
-          class="btn-primary px-3 text-sm whitespace-nowrap"
-          :disabled="!modelToTest.trim() || testStore.isTesting || !isValid"
-          title="仅测试该模型的连通性"
-          @click="onTestSingleModel()"
-        >
-          测试该模型
-        </button>
-      </div>
-    </div>
-
     <div class="flex gap-3 pt-2">
       <button
         :disabled="testStore.isTesting || !isValid"
@@ -301,11 +237,7 @@
       >
         {{ testStore.isTesting ? '测试中...' : '开始测试' }}
       </button>
-      <button
-        :disabled="!testStore.hasResult || testStore.isTesting"
-        class="btn-success flex-1 py-3 px-4"
-        @click="onSave"
-      >
+      <button :disabled="testStore.isTesting" class="btn-success flex-1 py-3 px-4" @click="onSave">
         保存结果
       </button>
     </div>
@@ -364,15 +296,12 @@ export default {
     })
 
     const savedProviders = ref([])
-    const modelToTest = ref('')
     const showApiKey = ref(false)
     const modelFilter = ref('')
     const selectedModels = ref([])
     const apiModes = API_MODES
     const providerFieldRef = ref(null)
-    const modelFieldRef = ref(null)
     const providerDropdown = ref({ visible: false, x: 0, y: 0, width: 0 })
-    const modelDropdown = ref({ visible: false, x: 0, y: 0, width: 0 })
     const contextMenu = ref({
       visible: false,
       x: 0,
@@ -488,14 +417,6 @@ export default {
       openDropdown(providerDropdown, providerFieldRef.value)
     }
 
-    const toggleModelDropdown = () => {
-      if (modelDropdown.value.visible) {
-        modelDropdown.value.visible = false
-        return
-      }
-      openDropdown(modelDropdown, modelFieldRef.value)
-    }
-
     const selectProvider = (name) => {
       config.value.provider = name
       providerDropdown.value.visible = false
@@ -504,7 +425,6 @@ export default {
 
     const closeDropdowns = () => {
       providerDropdown.value.visible = false
-      modelDropdown.value.visible = false
     }
 
     const onProviderChange = () => {
@@ -518,22 +438,13 @@ export default {
       testStore.testConnection({ ...config.value })
     }
 
-    const selectModel = (model) => {
-      modelToTest.value = model
-      modelDropdown.value.visible = false
-    }
-
     const onTestSingleModel = (model) => {
-      const target = typeof model === 'string' ? model.trim() : modelToTest.value.trim()
+      const target = typeof model === 'string' ? model.trim() : ''
       if (!target || !isValid.value || testStore.isTesting) return
-      if (typeof model === 'string') {
-        modelToTest.value = target
-      }
       testStore.testSingleModel({ ...config.value }, target)
     }
 
     const onSave = async () => {
-      if (!testStore.hasResult) return
       await testStore.saveResult({ ...config.value })
       await loadSavedProviders()
     }
@@ -583,9 +494,6 @@ export default {
         case 'apiKey':
           textToCopy = config.value.apiKey
           break
-        case 'modelToTest':
-          textToCopy = modelToTest.value
-          break
       }
 
       if (textToCopy) {
@@ -611,9 +519,6 @@ export default {
           case 'apiKey':
             config.value.apiKey = text
             break
-          case 'modelToTest':
-            modelToTest.value = text
-            break
         }
       } catch (error) {
         console.error('粘贴失败:', error)
@@ -623,7 +528,6 @@ export default {
 
     const handleMousedownOutside = () => {
       providerDropdown.value.visible = false
-      modelDropdown.value.visible = false
     }
 
     const handleClickOutside = () => {
@@ -713,7 +617,6 @@ export default {
       isValid,
       apiModes,
       savedProviders,
-      modelToTest,
       showApiKey,
       modelFilter,
       selectedModels,
@@ -727,7 +630,6 @@ export default {
       contextMenu,
       onProviderChange,
       onTest,
-      selectModel,
       onTestSingleModel,
       onSave,
       fetchModels,
@@ -738,12 +640,9 @@ export default {
       handlePaste,
       closeDropdowns,
       toggleProviderDropdown,
-      toggleModelDropdown,
       selectProvider,
       providerDropdown,
-      modelDropdown,
       providerFieldRef,
-      modelFieldRef,
       loadSavedProviders,
     }
   },

@@ -22,17 +22,17 @@
           {{ relayStore.running ? '停止' : '启动' }}
         </button>
       </div>
-      <button
-        type="button"
-        class="block w-full text-left min-w-0"
-        title="点击复制端点地址"
-        @click="copyBaseUrl"
-      >
-        <code class="block w-full text-xs text-text-primary truncate">
-          {{ relayStore.baseUrl }}
-        </code>
-      </button>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          class="flex-1 min-w-0 text-left"
+          title="点击复制端点地址"
+          @click="copyBaseUrl"
+        >
+          <code class="block w-full text-xs text-text-primary truncate">
+            {{ relayStore.baseUrl }}
+          </code>
+        </button>
         <label class="flex items-center gap-1 text-[14px] text-text-muted flex-shrink-0">
           端口
           <input
@@ -45,7 +45,7 @@
             @change="applyPort"
           />
         </label>
-        <span class="text-[14px] text-text-muted truncate">
+        <span class="text-[14px] text-text-muted whitespace-nowrap">
           · {{ relayStore.enabledCount }} 个提供商 · {{ relayStore.modelCount }} 个模型
         </span>
       </div>
@@ -525,52 +525,6 @@
       </div>
     </div>
 
-    <details class="flex-shrink-0" @toggle="onLogsToggle">
-      <summary
-        class="flex items-center gap-1 text-[14px] text-text-secondary cursor-pointer select-none hover:text-text-primary transition-colors"
-      >
-        <span>请求日志</span>
-        <span class="px-1 rounded-full bg-surface-alt text-[13px] text-text-muted leading-4">
-          {{ relayStore.logs.length }}
-        </span>
-      </summary>
-      <div class="mt-1.5 max-h-32 overflow-y-auto rounded-card border border-border bg-surface-alt">
-        <div
-          v-if="relayStore.logs.length === 0"
-          class="text-[14px] text-text-muted text-center py-2"
-        >
-          暂无请求
-        </div>
-        <div
-          v-for="log in relayStore.logs.slice(0, 30)"
-          :key="log.id"
-          class="flex items-center gap-1.5 px-1.5 py-0.5 text-[13px] border-b border-border last:border-b-0"
-        >
-          <span class="text-text-muted flex-shrink-0 tabular-nums">{{ shortTime(log.at) }}</span>
-          <span class="text-text-primary truncate flex-1" :title="log.model">{{ log.model }}</span>
-          <span class="text-text-muted truncate max-w-[64px]" :title="log.provider">
-            {{ log.provider }}
-          </span>
-          <span
-            class="flex-shrink-0 px-1 rounded leading-4"
-            :class="log.error ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'"
-            :title="log.error || '成功'"
-          >
-            {{ log.status || 'ERR' }}
-          </span>
-          <span class="text-text-muted flex-shrink-0 tabular-nums">{{ log.ms }}ms</span>
-        </div>
-      </div>
-      <div class="flex gap-1 mt-1">
-        <button class="btn-ghost text-[13px] px-1.5 py-0.5" @click="relayStore.loadLogs()">
-          刷新
-        </button>
-        <button class="btn-ghost text-[13px] px-1.5 py-0.5" @click="relayStore.clearLogs()">
-          清空
-        </button>
-      </div>
-    </details>
-
     <Teleport to="body">
       <div
         v-if="modelPicker.visible"
@@ -973,18 +927,6 @@ export default {
       return lines.join('\n')
     }
 
-    const shortTime = (iso) => {
-      if (!iso) return '--:--:--'
-      const date = new Date(iso)
-      if (Number.isNaN(date.getTime())) return '--:--:--'
-      return date.toTimeString().slice(0, 8)
-    }
-
-    // 展开时才拉取，避免每次渲染都请求主进程
-    const onLogsToggle = (event) => {
-      if (event.target.open) relayStore.loadLogs()
-    }
-
     const openDocs = () => {
       const url = presetDocs.value
       if (!url) return
@@ -1041,8 +983,6 @@ export default {
       applyPort,
       copyBaseUrl,
       openDocs,
-      shortTime,
-      onLogsToggle,
       limitLabel,
       limitTitle,
     }

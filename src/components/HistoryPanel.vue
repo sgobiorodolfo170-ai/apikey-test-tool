@@ -1,5 +1,5 @@
 <template>
-  <div class="card p-6 flex flex-col h-full w-full">
+  <div class="p-6 flex flex-col h-full w-full">
     <div
       class="flex items-center justify-between gap-2 border-b border-border pb-2 mb-3 flex-shrink-0"
     >
@@ -78,6 +78,29 @@
         </button>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
+        <button
+          type="button"
+          class="w-8 h-8 flex items-center justify-center rounded-full text-text-secondary hover:bg-surface-hover hover:text-accent transition-colors flex-shrink-0"
+          title="设置"
+          aria-label="设置"
+          @click="settingsOpen = true"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+            />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
         <span class="text-[14px] text-text-muted leading-none"
           >v{{ updateStore.currentVersion }}</span
         >
@@ -107,8 +130,14 @@
           v-for="(record, index) in historyStore.records"
           :key="record.id"
           class="bg-surface-alt rounded p-3 hover:bg-surface-hover cursor-pointer transition-all duration-150 border-l-2"
-          :class="record.result?.connected ? 'border-l-success' : 'border-l-danger'"
-          @click="testStore.setCurrentResult(record.result)"
+          :class="
+            record.result?.untested
+              ? 'border-l-border'
+              : record.result?.connected
+                ? 'border-l-success'
+                : 'border-l-danger'
+          "
+          @click="record.result?.untested ? null : testStore.setCurrentResult(record.result)"
         >
           <div class="flex justify-between items-start">
             <div class="flex-1">
@@ -124,12 +153,20 @@
             <div class="flex items-center gap-2 ml-3 flex-shrink-0">
               <span
                 class="text-sm whitespace-nowrap"
-                :class="record.result?.connected ? 'text-success' : 'text-danger'"
+                :class="
+                  record.result?.untested
+                    ? 'text-text-muted'
+                    : record.result?.connected
+                      ? 'text-success'
+                      : 'text-danger'
+                "
               >
-                {{ record.result?.connected ? '已连接' : '失败' }}
+                {{
+                  record.result?.untested ? '未测试' : record.result?.connected ? '已连接' : '失败'
+                }}
               </span>
               <span
-                v-if="record.result?.summary"
+                v-if="record.result?.summary && !record.result?.untested"
                 class="text-xs text-text-secondary whitespace-nowrap"
               >
                 {{ record.result.summary.success }}个成功
@@ -174,7 +211,7 @@
                 删除
               </button>
               <button
-                class="btn-ghost text-xs px-2 py-1"
+                class="text-xs px-2 py-1 rounded-btn bg-blue-400 text-white hover:bg-blue-500 transition-colors"
                 title="把该提供商加入中转站（仅支持 OpenAI 兼容模式）"
                 @click.stop="addToRelay(record)"
               >
@@ -207,6 +244,7 @@
     <RelayStatsPanel v-else-if="activeTab === 'stats'" />
     <RelayUsagePanel v-else-if="activeTab === 'usage'" />
     <ConfigPanel v-else />
+    <SettingsDialog :open="settingsOpen" @close="settingsOpen = false" />
   </div>
 </template>
 
@@ -225,10 +263,18 @@ import RelayPanel from './RelayPanel.vue'
 import RelayStatsPanel from './RelayStatsPanel.vue'
 import RelayUsagePanel from './RelayUsagePanel.vue'
 import ConfigPanel from './ConfigPanel.vue'
+import SettingsDialog from './SettingsDialog.vue'
 
 export default {
   name: 'HistoryPanel',
-  components: { ChannelPanel, RelayPanel, RelayStatsPanel, RelayUsagePanel, ConfigPanel },
+  components: {
+    ChannelPanel,
+    RelayPanel,
+    RelayStatsPanel,
+    RelayUsagePanel,
+    ConfigPanel,
+    SettingsDialog,
+  },
   setup() {
     const historyStore = useHistoryStore()
     const testStore = useTestStore()
@@ -237,6 +283,7 @@ export default {
     const toastStore = useToastStore()
     const updateStore = useUpdateStore()
     const activeTab = ref('history')
+    const settingsOpen = ref(false)
     const requestCount = computed(
       () => new Set(relayStore.logs.map((item) => item.requestId).filter(Boolean)).size,
     )
@@ -358,6 +405,7 @@ export default {
       relayStore,
       updateStore,
       openReleasePage,
+      settingsOpen,
       activeTab,
       requestCount,
       handleDelete,

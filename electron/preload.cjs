@@ -11,6 +11,9 @@ ipcRenderer.on('http-stream-event', (_event, data) => {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getUserDataPath: () => ipcRenderer.invoke('get-user-data-path'),
+  // 数据目录：所有项目数据文件（历史、渠道、中转站配置与统计）的存放位置
+  getDataDir: () => ipcRenderer.invoke('get-data-dir'),
+  chooseDataDir: () => ipcRenderer.invoke('choose-data-dir'),
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
   writeFile: (filePath, data) => ipcRenderer.invoke('write-file', filePath, data),
   existsFile: (filePath) => ipcRenderer.invoke('exists-file', filePath),
@@ -38,6 +41,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 折叠聊天测试卡片：主窗口临时收窄到左区卡片宽度，展开时恢复原尺寸
   setWindowCollapsed: (payload) => ipcRenderer.invoke('window-set-collapsed', payload),
+
+  // 卡片尺寸变化后让主窗口跟随（窗口与卡片保持固定间距）
+  setWindowSize: (payload) => ipcRenderer.invoke('window-set-size', payload),
 
   // 中转站：本地 OpenAI 兼容聚合端点
   relay: {

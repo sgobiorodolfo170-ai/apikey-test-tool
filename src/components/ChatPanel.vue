@@ -62,21 +62,24 @@
           class="btn-ghost px-3 py-2"
           :title="
             supportsVision
-              ? '添加图片（也可以直接粘贴截图）'
-              : `当前模式（${currentModeLabel}）不支持图片输入`
+              ? '添加图片或文件（也可以直接粘贴截图）'
+              : '添加文件（当前模式不支持图片输入）'
           "
-          @click="pickImage"
+          @click="pickFiles"
         >
-          🖼
+          <svg
+            viewBox="0 0 24 24"
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
         </button>
-        <input
-          ref="fileInputRef"
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
-          multiple
-          class="hidden"
-          @change="onFilesPicked"
-        />
+        <input ref="fileInputRef" type="file" multiple class="hidden" @change="onFilesPicked" />
         <textarea
           ref="chatInputRef"
           v-model="chatInput"
@@ -141,6 +144,50 @@ import { getApiAdapter, apiModeLabel, apiModeSupportsVision } from '../api/modes
 import { prepareImage } from '../utils/image.js'
 
 const MAX_ATTACHMENTS = 4
+// 文本类文件直接读取内容追加到输入框；二进制文件不支持
+const MAX_TEXT_FILE_BYTES = 1024 * 1024
+const TEXT_FILE_EXTENSIONS = [
+  '.txt',
+  '.md',
+  '.markdown',
+  '.json',
+  '.csv',
+  '.log',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.ts',
+  '.tsx',
+  '.jsx',
+  '.vue',
+  '.py',
+  '.go',
+  '.java',
+  '.c',
+  '.cpp',
+  '.h',
+  '.css',
+  '.scss',
+  '.html',
+  '.xml',
+  '.yaml',
+  '.yml',
+  '.ini',
+  '.conf',
+  '.toml',
+  '.sh',
+  '.ps1',
+  '.sql',
+]
+
+const isTextFile = (file) => {
+  const type = String(file.type || '')
+  if (type.startsWith('text/') || type === 'application/json' || type === 'application/xml') {
+    return true
+  }
+  const name = String(file.name || '').toLowerCase()
+  return TEXT_FILE_EXTENSIONS.some((extension) => name.endsWith(extension))
+}
 
 export default {
   name: 'ChatPanel',
@@ -225,28 +272,46 @@ export default {
 
     const currentModeLabel = computed(() => apiModeLabel(testStore.currentResult?.config?.apiMode))
 
-    const pickImage = () => {
-      // 明确告知原因，比禁用按钮更好排查
-      if (!supportsVision.value) {
-        toastStore.addToast(
-          `当前模式（${currentModeLabel.value}）不支持图片输入，请切换到 OpenAI / Anthropic / Gemini 等对话模式`,
-          'warning',
-        )
-        return
-      }
+    const pickFiles = () => {
       fileInputRef.value?.click()
     }
 
     const addFiles = async (files) => {
       for (const file of files) {
-        if (attachments.value.length >= MAX_ATTACHMENTS) {
-          toastStore.addToast(`最多添加 ${MAX_ATTACHMENTS} 张图片`, 'warning')
-          break
+        if (String(file.type || '').startsWith('image/')) {
+          if (!supportsVision.value) {
+            toastStore.addToast(
+              `当前模式（${currentModeLabel.value}）不支持图片输入，请切换到 OpenAI / Anthropic / Gemini 等对话模式`,
+              'warning',
+            )
+            continue
+          }
+          if (attachments.value.length >= MAX_ATTACHMENTS) {
+            toastStore.addToast(`最多添加 ${MAX_ATTACHMENTS} 张图片`, 'warning')
+            continue
+          }
+          try {
+            attachments.value.push(await prepareImage(file))
+          } catch (error) {
+            toastStore.addToast(error.message, 'error')
+          }
+          continue
+        }
+
+        if (!isTextFile(file)) {
+          toastStore.addToast(`不支持的文件类型：${file.name}`, 'warning')
+          continue
+        }
+        if (file.size > MAX_TEXT_FILE_BYTES) {
+          toastStore.addToast(`文件过大（上限 1MB）：${file.name}`, 'warning')
+          continue
         }
         try {
-          attachments.value.push(await prepareImage(file))
-        } catch (error) {
-          toastStore.addToast(error.message, 'error')
+          const text = await file.text()
+          const block = `【文件 ${file.name}】\n${text}`
+          chatInput.value = chatInput.value.trim() ? `${chatInput.value}\n\n${block}` : block
+        } catch {
+          toastStore.addToast(`读取文件失败：${file.name}`, 'error')
         }
       }
     }
@@ -412,7 +477,7 @@ export default {
       fileInputRef,
       supportsVision,
       currentModeLabel,
-      pickImage,
+      pickFiles,
       onFilesPicked,
       handlePaste,
       removeAttachment,

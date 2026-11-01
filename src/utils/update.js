@@ -41,13 +41,51 @@ export function parseRelease(payload) {
 }
 
 // 查询最新 Release；失败时抛错，由调用方决定是否提示（更新检查不该打扰用户）
-export async function fetchLatestRelease({ timeout = 8000 } = {}) {
-  const response = await http.get(RELEASE_API, {
-    headers: { Accept: 'application/vnd.github+json' },
-    timeout,
-  })
+// GitHub API 允许跨域，桌面渲染进程优先直连：主进程 net.fetch 会继承系统代理，
+// 代理不可用时更新检查会静默失败（net::ERR_PROXY_CONNECTION_FAILED）。
+async function fetchReleaseDirect(timeout) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    const response = await fetch(RELEASE_API, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`)
+      error.status = response.status
+      throw error
+    }
+    return await response.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
-  const release = parseRelease(response?.data)
+function hasDesktopBridge() {
+  return typeof window !== 'undefined' && typeof window.electronAPI?.request === 'function'
+}
+
+export async function fetchLatestRelease({ timeout = 8000 } = {}) {
+  let data = null
+
+  if (hasDesktopBridge() && typeof fetch === 'function') {
+    try {
+      data = await fetchReleaseDirect(timeout)
+    } catch {
+      // 渲染层直连失败时再退回主进程代理
+    }
+  }
+
+  if (!data) {
+    const response = await http.get(RELEASE_API, {
+      headers: { Accept: 'application/vnd.github+json' },
+      timeout,
+    })
+    data = response?.data
+  }
+
+  const release = parseRelease(data)
   if (!release) throw new Error('未获取到版本信息')
   return release
 }

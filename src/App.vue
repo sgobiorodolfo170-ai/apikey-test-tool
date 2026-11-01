@@ -26,37 +26,56 @@
             :i="item.i"
             :min-w="item.minW"
             :min-h="item.minH"
+            :is-draggable="false"
             :drag-ignore-from="dragIgnoreFrom"
           >
             <div class="relative h-full w-full" :data-panel="item.i">
-              <HistoryPanel v-if="item.i === 'history'">
-                <template #actions>
-                  <button
-                    type="button"
-                    class="w-8 h-8 flex items-center justify-center rounded-full text-text-secondary hover:bg-surface-hover hover:text-accent transition-colors flex-shrink-0"
-                    :title="chatCollapsed ? '展开聊天测试卡片' : '折叠聊天测试卡片'"
-                    :aria-label="chatCollapsed ? '展开聊天测试卡片' : '折叠聊天测试卡片'"
-                    @click.stop="toggleChatCollapsed"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      class="w-5 h-5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path v-if="chatCollapsed" d="M18 17l-5-5 5-5" />
-                      <path v-if="chatCollapsed" d="M11 17l-5-5 5-5" />
-                      <path v-if="!chatCollapsed" d="M6 17l5-5-5-5" />
-                      <path v-if="!chatCollapsed" d="M13 17l5-5-5-5" />
-                    </svg>
-                  </button>
-                </template>
-              </HistoryPanel>
-              <ChatEvalPanel v-if="item.i === 'chateval'" />
+              <!-- 单张卡片：左区历史、右区聊天/测评，中间用可拖动分割线区分 -->
+              <!-- 该节点位于 v-for 内：模板 ref 会被收集成数组，这里用函数式 ref 直接取元素 -->
+              <div :ref="setWorkspaceEl" class="card h-full w-full flex overflow-hidden">
+                <div
+                  :ref="setLeftPaneEl"
+                  class="h-full min-w-0 flex flex-col"
+                  :style="leftPaneStyle"
+                >
+                  <HistoryPanel>
+                    <template #actions>
+                      <button
+                        type="button"
+                        class="w-8 h-8 flex items-center justify-center rounded-full text-text-secondary hover:bg-surface-hover hover:text-accent transition-colors flex-shrink-0"
+                        :title="chatCollapsed ? '展开聊天测试区' : '折叠聊天测试区'"
+                        :aria-label="chatCollapsed ? '展开聊天测试区' : '折叠聊天测试区'"
+                        @click.stop="toggleChatCollapsed"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          class="w-5 h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path v-if="chatCollapsed" d="M18 17l-5-5 5-5" />
+                          <path v-if="chatCollapsed" d="M11 17l-5-5 5-5" />
+                          <path v-if="!chatCollapsed" d="M6 17l5-5-5-5" />
+                          <path v-if="!chatCollapsed" d="M13 17l5-5-5-5" />
+                        </svg>
+                      </button>
+                    </template>
+                  </HistoryPanel>
+                </div>
+                <div
+                  v-if="!chatCollapsed"
+                  class="pane-divider flex-shrink-0"
+                  title="拖动调节左右区域宽度"
+                  @mousedown.prevent.stop="startPaneResize"
+                ></div>
+                <div v-if="!chatCollapsed" class="h-full min-w-0 flex-1 flex flex-col">
+                  <ChatEvalPanel />
+                </div>
+              </div>
               <!-- 自定义边把手：覆盖整条右/下边缘，悬停显示调整大小光标 -->
               <div class="vue-resizable-handle edge-handle edge-right"></div>
               <div class="vue-resizable-handle edge-handle edge-bottom"></div>
@@ -64,15 +83,6 @@
           </grid-item>
         </grid-layout>
       </div>
-      <!-- 卡片之间的分割线：左右拖动重新分配宽度 -->
-      <div
-        v-for="split in splitters"
-        :key="split.key"
-        class="grid-splitter"
-        :style="{ left: split.left + 'px', top: split.top + 'px', height: split.height + 'px' }"
-        title="拖动调节左右卡片宽度"
-        @mousedown.prevent.stop="startSplitResize(split, $event)"
-      ></div>
     </div>
     <ToastContainer />
   </div>
@@ -92,25 +102,22 @@ import { initStorage } from './utils/storage.js'
 const LAYOUT_KEY = 'dashboard-layout'
 const COLLAPSE_KEY = 'dashboard-chat-collapsed'
 const COLLAPSE_WIDTH_KEY = 'dashboard-chat-collapsed-width'
+const PANE_RATIO_KEY = 'dashboard-pane-ratio'
 
-const HISTORY_PANEL_ID = 'history'
-const CHAT_PANEL_ID = 'chateval'
+const WORKSPACE_ID = 'workspace'
 
-// 折叠后窗口收窄：页面左右内边距 + 网格 margin 的估算值，实际以测量校正
-const CARD_FRAME = 60
-const COLLAPSED_CARD_MIN = 320
+// 单张卡片：左区历史、右区聊天/测评，中间用分割线区分；折叠时只保留左区
+const defaultLayout = [{ i: WORKSPACE_ID, x: 0, y: 0, w: 12, h: 10, minW: 6, minH: 4 }]
 
-const defaultLayout = [
-  { i: 'history', x: 0, y: 0, w: 6, h: 10, minW: 2, minH: 4 },
-  { i: 'chateval', x: 6, y: 0, w: 6, h: 10, minW: 3, minH: 4 },
-]
-
-// 只渲染仍在使用的卡片：早期版本遗留的 result / eval / chat / relay 等会从旧布局中剔除
-const PANEL_IDS = new Set(defaultLayout.map((item) => item.i))
+// 折叠后窗口收窄时，左区最小可用宽度
+const COLLAPSED_PANE_MIN = 360
 
 // 卡片间距；vue-grid-layout 的卡片定位含 margin 内缩：
 // top = y*rowHeight + (y+1)*margin, left = x*colWidth + (x+1)*margin
 const GRID_MARGIN = [5, 5]
+
+// 单卡高度上限（行）：异常布局值会把行高自适应压到几像素，导致高度无法微调
+const MAX_LAYOUT_ROWS = 24
 
 // 拖拽忽略：在卡片内的交互/内容组件上按下时不要拖动卡片，仅空白区域可拖拽
 const DRAG_IGNORE_FROM =
@@ -139,29 +146,28 @@ function loadLayout() {
   } catch (e) {
     console.error('加载布局失败:', e)
   }
-  // 「配置」卡片已并入历史卡片的选项卡：把它占的宽度让给同一行的相邻卡片
-  // （优先左邻，其次右邻，再次同行的历史卡片），避免移除后留下空白
-  const configItem = layout.find((item) => item.i === 'config')
-  if (configItem) {
-    const sameRow = layout.filter((item) => item.i !== 'config' && item.y === configItem.y)
-    const target =
-      sameRow.find((item) => item.x + item.w === configItem.x) ||
-      sameRow.find((item) => item.x === configItem.x + configItem.w) ||
-      sameRow.find((item) => item.i === 'history')
-    if (target) {
-      target.w = Math.min(12 - target.x, target.w + configItem.w)
-    }
+
+  // 旧版两张卡片（history / chateval）合并为单张卡片，高度取较大值
+  const maxH = layout.reduce((max, item) => Math.max(max, item.h), defaultLayout[0].h)
+  const workspace = layout.find((item) => item.i === WORKSPACE_ID)
+  // 行数限制在合理区间：旧布局或异常写入可能留下极大的 h，
+  // 会让行高自适应后每行只剩几像素，导致卡片高度几乎无法微调
+  const rawH = Math.round(workspace ? workspace.h : maxH)
+  const h = Number.isFinite(rawH)
+    ? Math.min(MAX_LAYOUT_ROWS, Math.max(defaultLayout[0].minH, rawH))
+    : defaultLayout[0].h
+  // 单卡片始终占满 12 列，只保留可调整的高度
+  return [{ ...defaultLayout[0], h }]
+}
+
+function loadPaneRatio() {
+  try {
+    const ratio = Number(localStorage.getItem(PANE_RATIO_KEY))
+    return Number.isFinite(ratio) && ratio >= 0.2 && ratio <= 0.8 ? ratio : 0.5
+  } catch (e) {
+    console.error('加载左右比例失败:', e)
   }
-  // 已下线卡片（含并入历史卡片的配置 / 中转站）不再渲染，从旧布局里剔除，避免留下空白卡片
-  layout = layout.filter((item) => PANEL_IDS.has(item.i))
-  // 新面板（如 eval）未随旧布局保存时，追加默认位置
-  const ids = new Set(layout.map((item) => item.i))
-  for (const base of defaultLayout) {
-    if (!ids.has(base.i)) {
-      layout = [...layout, { ...base }]
-    }
-  }
-  return layout
+  return 0.5
 }
 
 function loadChatCollapsed() {
@@ -219,40 +225,54 @@ export default {
     const savedLayout = ref(loadLayout())
     const chatCollapsed = ref(loadChatCollapsed())
     const collapsedWindowWidth = ref(loadCollapsedWidth())
+    const leftRatio = ref(loadPaneRatio())
     const containerRef = ref(null)
+    // 单卡工作区元素；模板 ref 位于 v-for 内，Vue 会收集成数组，
+    // 因此改用函数式 ref 直接持有元素引用
+    const workspaceEl = ref(null)
+    const leftPaneEl = ref(null)
+    const setWorkspaceEl = (el) => {
+      workspaceEl.value = el
+    }
+    const setLeftPaneEl = (el) => {
+      leftPaneEl.value = el
+    }
     const rowHeight = ref(60)
 
-    // 折叠聊天测试卡片时：只移除右侧卡片，左区卡片保持原有列宽与行高（不拉伸）。
-    // 真实布局仍保留在 savedLayout 中，展开时原样恢复。
-    const gridLayout = computed(() => {
-      if (!chatCollapsed.value) return savedLayout.value.map((item) => ({ ...item }))
-      return savedLayout.value
-        .filter((item) => item.i !== CHAT_PANEL_ID)
-        .map((item) => (item.i === HISTORY_PANEL_ID ? { ...item, x: 0 } : item))
-    })
+    // 卡片尺寸变化后让窗口跟随：调整期间暂停 rowHeight 自适应，避免两边互相抵消
+    let lastFittedCols = null
+    const windowFit = { active: false, suspended: false, timer: null, target: null, seq: 0 }
 
-    const historyCardEl = () =>
-      containerRef.value?.querySelector(`[data-panel="${HISTORY_PANEL_ID}"]`)
+    // 单张卡片：左右区由内部布局控制，折叠只影响右区显示
+    const gridLayout = computed(() => savedLayout.value.map((item) => ({ ...item })))
+
+    // 左区按比例占卡片宽度；折叠后铺满整张卡片
+    const leftPaneStyle = computed(() =>
+      chatCollapsed.value
+        ? { flex: '1 1 100%' }
+        : { flex: `0 0 ${(leftRatio.value * 100).toFixed(2)}%` },
+    )
 
     const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
 
-    // 折叠后把主窗口收窄到刚好容纳左区卡片：先按折叠前的卡片宽度估算，
-    // 等窗口重排后按实际渲染宽度补偿一次，保证卡片像素尺寸不变。
-    async function fitWindowToHistoryCard(cardWidth) {
+    // 折叠后把主窗口收窄到刚好容纳左区：先按折叠前左区宽度估算，
+    // 等窗口重排后按实际渲染宽度补偿一次，保证左区宽度不变。
+    async function fitWindowToLeftPane(paneWidth) {
       const api = window.electronAPI
       if (!api?.setWindowCollapsed) return
-      const target = Math.round(Math.max(COLLAPSED_CARD_MIN, cardWidth || 0) + CARD_FRAME)
+      const frameW = Math.max(0, (window.outerWidth || 0) - window.innerWidth)
+      const target = Math.round(Math.max(COLLAPSED_PANE_MIN, paneWidth || 0) + 40 + frameW)
       const result = await api.setWindowCollapsed({ collapsed: true, width: target })
       if (!result?.ok) return
 
       await nextFrame()
       await new Promise((resolve) => setTimeout(resolve, 120))
-      const after = historyCardEl()?.getBoundingClientRect().width || 0
-      if (cardWidth && Math.abs(after - cardWidth) > 2) {
+      const after = leftPaneEl.value?.getBoundingClientRect().width || 0
+      if (paneWidth && Math.abs(after - paneWidth) > 2) {
         // setBounds 使用窗口外框宽度，校正时同样按 outerWidth 计算
         await api.setWindowCollapsed({
           collapsed: true,
-          width: Math.round((window.outerWidth || window.innerWidth) + (cardWidth - after)),
+          width: Math.round((window.outerWidth || window.innerWidth) + (paneWidth - after)),
         })
       }
       // 记住折叠时的窗口宽度（外框）：刷新或重启后按它恢复折叠窗口
@@ -263,22 +283,57 @@ export default {
     const toggleChatCollapsed = async () => {
       const api = window.electronAPI
       const willCollapse = !chatCollapsed.value
-      const cardWidth = historyCardEl()?.getBoundingClientRect().width || 0
+      const paneWidth = leftPaneEl.value?.getBoundingClientRect().width || 0
 
+      windowFit.suspended = true
       chatCollapsed.value = willCollapse
       localStorage.setItem(COLLAPSE_KEY, willCollapse ? '1' : '0')
       await nextTick()
       applyScale()
-      scheduleSplitters()
 
-      if (!api?.setWindowCollapsed) return
-      if (willCollapse) {
-        await fitWindowToHistoryCard(cardWidth)
-      } else {
-        await api.setWindowCollapsed({ collapsed: false })
-        collapsedWindowWidth.value = 0
-        localStorage.removeItem(COLLAPSE_WIDTH_KEY)
+      try {
+        if (!api?.setWindowCollapsed) return
+        if (willCollapse) {
+          await fitWindowToLeftPane(paneWidth)
+        } else {
+          await api.setWindowCollapsed({ collapsed: false })
+          collapsedWindowWidth.value = 0
+          localStorage.removeItem(COLLAPSE_WIDTH_KEY)
+        }
+      } finally {
+        windowFit.suspended = false
+        lastFittedCols = gridCols.value
       }
+    }
+
+    // 拖动卡片内的左右分割线：按比例重新分配左右区域宽度
+    function startPaneResize(event) {
+      if (chatCollapsed.value) return
+      const container = workspaceEl.value
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      if (!rect.width) return
+
+      const startX = event.clientX
+      const startRatio = leftRatio.value
+      const minRatio = Math.min(0.45, 300 / rect.width)
+
+      const onMove = (moveEvent) => {
+        const next = startRatio + (moveEvent.clientX - startX) / rect.width
+        leftRatio.value = Math.min(1 - minRatio, Math.max(minRatio, next))
+      }
+      const stop = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', stop)
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        localStorage.setItem(PANE_RATIO_KEY, String(leftRatio.value))
+      }
+
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', stop)
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
     }
 
     // 布局实际使用的最大列数（最右卡片的结束列）
@@ -302,120 +357,63 @@ export default {
       }
     })
 
-    // ---------- 卡片间分割线：左右拖动重新分配宽度 ----------
-    const splitters = ref([])
-    let splitDrag = null
-    let splitterFrame = null
+    // 卡片尺寸改变后让窗口跟随：高度按行数、宽度按使用列数等比调整，
+    // 保持窗口边界与卡片间距不变（顶部 15 / 底部 30，左侧 15 / 右侧 25）
+    function scheduleWindowFit(layout) {
+      const api = window.electronAPI
+      if (!api?.setWindowSize || windowFit.suspended) return
 
-    // 布局更新后等一帧再量位置，避免读到动画中间态
-    function scheduleSplitters() {
-      if (splitterFrame) cancelAnimationFrame(splitterFrame)
-      splitterFrame = requestAnimationFrame(() => {
-        splitterFrame = null
-        updateSplitters()
-      })
-    }
+      const rows = Math.max(...layout.map((item) => item.y + item.h))
+      const k = Math.max(...layout.map((item) => item.x + item.w))
+      if (!rows || !k) return
 
-    // 同一行、首尾相接的两张卡片之间放一条可拖动的分割线。
-    // 位置直接按网格公式算，避免卡片过渡动画期间量到中间值
-    function updateSplitters() {
-      const container = containerRef.value
-      const grid = container?.querySelector('.vue-grid-layout')
-      if (!grid) return
-      const colNum = 12
-      const margin = GRID_MARGIN[0]
-      const width = grid.clientWidth
-      if (!width) return
-      const colWidth = (width - margin * (colNum + 1)) / colNum
+      const frameW = Math.max(0, (window.outerWidth || 0) - window.innerWidth)
+      const frameH = Math.max(0, (window.outerHeight || 0) - window.innerHeight)
       const rowUnit = rowHeight.value + GRID_MARGIN[1]
-      const next = []
-      for (const left of gridLayout.value) {
-        const right = gridLayout.value.find(
-          (item) => item.i !== left.i && item.y === left.y && item.x === left.x + left.w,
-        )
-        if (!right) continue
-        const leftEdge = colWidth * left.x + (left.x + 1) * margin
-        const leftRight = leftEdge + colWidth * left.w + (left.w - 1) * margin
-        const rightLeft = colWidth * right.x + (right.x + 1) * margin
-        next.push({
-          key: `${left.i}-${right.i}`,
-          leftId: left.i,
-          rightId: right.i,
-          left: (leftRight + rightLeft) / 2,
-          top: left.y * rowUnit + margin,
-          height: Math.min(left.h, right.h) * rowUnit - margin,
-        })
+      const height = Math.round(45 + rows * rowUnit + frameH)
+
+      let width = null
+      if (lastFittedCols && k !== lastFittedCols) {
+        width = Math.round((window.innerWidth * k) / lastFittedCols + frameW)
       }
-      splitters.value = next
-    }
+      lastFittedCols = k
 
-    function startSplitResize(split, event) {
-      const left = savedLayout.value.find((item) => item.i === split.leftId)
-      const right = savedLayout.value.find((item) => item.i === split.rightId)
-      const grid = containerRef.value?.querySelector('.vue-grid-layout')
-      if (!left || !right || !grid) return
+      if (width === null && Math.abs(height - window.outerHeight) <= 2) return
 
-      const colWidth = (grid.clientWidth - GRID_MARGIN[0] * 13) / 12
-      const unit = colWidth + GRID_MARGIN[0]
-      if (!unit) return
-
-      splitDrag = {
-        leftId: left.i,
-        rightId: right.i,
-        startX: event.clientX,
-        unit,
-        leftW: left.w,
-        rightW: right.w,
-        rightX: right.x,
-        minDelta: (left.minW ?? 2) - left.w,
-        maxDelta: right.w - (right.minW ?? 2),
-        lastDelta: 0,
-      }
-      window.addEventListener('mousemove', onSplitMove)
-      window.addEventListener('mouseup', stopSplitResize)
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-    }
-
-    function onSplitMove(event) {
-      if (!splitDrag) return
-      const raw = (event.clientX - splitDrag.startX) / splitDrag.unit
-      const clamped = Math.max(splitDrag.minDelta, Math.min(splitDrag.maxDelta, raw))
-      // 保留两位小数：宽度连续跟随鼠标，不再按整列跳动
-      const delta = Math.round(clamped * 100) / 100
-      if (delta === splitDrag.lastDelta) return
-      splitDrag.lastDelta = delta
-      const leftW = Math.round((splitDrag.leftW + delta) * 100) / 100
-      const rightW = Math.round((splitDrag.rightW - delta) * 100) / 100
-      const rightX = Math.round((splitDrag.rightX + delta) * 100) / 100
-      savedLayout.value = savedLayout.value.map((item) => {
-        if (item.i === splitDrag.leftId) return { ...item, w: leftW }
-        if (item.i === splitDrag.rightId) {
-          return { ...item, x: rightX, w: rightW }
+      windowFit.target = { width, height }
+      windowFit.active = true
+      const seq = ++windowFit.seq
+      if (windowFit.timer) clearTimeout(windowFit.timer)
+      windowFit.timer = setTimeout(async () => {
+        const target = windowFit.target || {}
+        try {
+          await api.setWindowSize({
+            width: target.width ?? window.outerWidth,
+            height: target.height,
+          })
+        } finally {
+          setTimeout(() => {
+            if (windowFit.seq !== seq) return
+            windowFit.active = false
+            windowFit.target = null
+            applyScale()
+          }, 160)
         }
-        return item
-      })
-    }
-
-    function stopSplitResize() {
-      window.removeEventListener('mousemove', onSplitMove)
-      window.removeEventListener('mouseup', stopSplitResize)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      splitDrag = null
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(savedLayout.value.map(stripLayoutItem)))
-      scheduleSplitters()
+      }, 80)
     }
 
     function onLayoutUpdated(newLayout) {
-      scheduleSplitters()
-      // 折叠状态下的布局是派生出来的显示布局，不能写回真实布局
+      // 折叠时卡片始终保留，窗口收窄过程中库可能重复 emit，忽略即可
       if (chatCollapsed.value) return
+
       const raw = newLayout.map(stripLayoutItem)
       const next = JSON.stringify(raw)
       // vue-grid-layout 在 layout prop 变化后会再次 emit layout-updated，
       // 内容未变化时必须忽略，否则与 :layout 绑定形成无限重排循环
       if (next === JSON.stringify(savedLayout.value)) return
+
+      // 用调整前的 rowHeight 计算窗口目标，避免与 applyScale 的自动缩放互相抵消
+      scheduleWindowFit(raw)
       savedLayout.value = raw
       localStorage.setItem(LAYOUT_KEY, next)
     }
@@ -426,6 +424,8 @@ export default {
     // 卡片底边（库的几何公式）= (y+h) * (rowHeight + margin)，同一底行的卡片严格对齐。
     // 令其等于容器高度，则最底部卡片的下边缘恰好贴合容器底部（距窗口下边界 30px）
     const applyScale = () => {
+      // 卡片尺寸调整 / 折叠窗口期间，rowHeight 先保持不变，由窗口跟随逻辑接管
+      if (windowFit.active || windowFit.suspended) return
       const { width, height } = lastSize
       if (width <= 0 || height <= 0 || gridLayout.value.length === 0) return
       let rows = 0
@@ -440,8 +440,6 @@ export default {
     }
 
     watch(gridLayout, applyScale)
-    // 布局变化（拖动 / 缩放 / 分割线）后重新定位分割线
-    watch(gridLayout, () => scheduleSplitters(), { flush: 'post' })
 
     const errorHandler = (event) => {
       // 浏览器良性警告：ResizeObserver 回调中触发布局变化时的标准提示，无需记录
@@ -474,7 +472,6 @@ export default {
             lastSize.height = entry.contentRect.height
           }
           applyScale()
-          scheduleSplitters()
         })
         resizeObserver.observe(containerRef.value)
       }
@@ -487,7 +484,7 @@ export default {
       }
 
       await nextTick()
-      scheduleSplitters()
+      lastFittedCols = gridCols.value
 
       // 折叠状态是持久化的：页面刷新或应用重启后，把窗口收窄到上次折叠时的宽度
       if (chatCollapsed.value && collapsedWindowWidth.value) {
@@ -516,38 +513,39 @@ export default {
       chatCollapsed,
       toggleChatCollapsed,
       containerRef,
+      setWorkspaceEl,
+      setLeftPaneEl,
+      leftPaneStyle,
+      startPaneResize,
       rowHeight,
       GRID_MARGIN,
       dragIgnoreFrom: DRAG_IGNORE_FROM,
       gridWidthStyle,
-      splitters,
-      startSplitResize,
     }
   },
 }
 </script>
 
 <style>
-/* 卡片之间的分割线：默认透明，悬停显示竖线，左右拖动调宽 */
-.grid-splitter {
-  position: absolute;
-  z-index: 5;
+/* 卡片内的左右分割线：拖动调整左右区宽度 */
+.pane-divider {
   width: 12px;
-  transform: translateX(-50%);
   cursor: col-resize;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.grid-splitter::before {
+.pane-divider::before {
   content: '';
-  width: 2px;
+  width: 1px;
   height: 100%;
-  border-radius: 2px;
-  background: transparent;
-  transition: background 0.15s;
+  background: #b6bac2;
+  transition:
+    background 0.15s,
+    width 0.15s;
 }
-.grid-splitter:hover::before {
+.pane-divider:hover::before {
+  width: 2px;
   background: rgba(59, 130, 246, 0.5);
 }
 
