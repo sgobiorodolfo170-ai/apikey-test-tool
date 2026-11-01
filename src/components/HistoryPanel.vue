@@ -8,6 +8,18 @@
           type="button"
           class="px-2.5 py-1 text-sm rounded-card transition-colors"
           :class="
+            activeTab === 'config'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'config'"
+        >
+          配置
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
             activeTab === 'history'
               ? 'bg-accent text-white'
               : 'text-text-secondary hover:bg-surface-hover'
@@ -63,18 +75,6 @@
           @click="activeTab = 'usage'"
         >
           统计
-        </button>
-        <button
-          type="button"
-          class="px-2.5 py-1 text-sm rounded-card transition-colors"
-          :class="
-            activeTab === 'config'
-              ? 'bg-accent text-white'
-              : 'text-text-secondary hover:bg-surface-hover'
-          "
-          @click="activeTab = 'config'"
-        >
-          配置
         </button>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">

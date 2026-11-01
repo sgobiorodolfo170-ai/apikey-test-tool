@@ -26,8 +26,9 @@ import App from '../App.vue'
 const gridStubs = {
   'grid-layout': { template: '<div class="grid-layout-stub"><slot /></div>' },
   'grid-item': {
-    props: ['h', 'w', 'x', 'y', 'i'],
-    template: '<div class="grid-item-stub" :data-h="h" :data-w="w"><slot /></div>',
+    props: ['h', 'w', 'x', 'y', 'i', 'isDraggable', 'isResizable'],
+    template:
+      '<div class="grid-item-stub" :data-h="h" :data-w="w" :data-draggable="String(isDraggable)" :data-resizable="String(isResizable)"><slot /></div>',
   },
   HistoryPanel: { template: '<div class="history-stub"><slot name="actions" /></div>' },
   ChatEvalPanel: { template: '<div class="chat-stub" />' },
@@ -118,6 +119,34 @@ describe('App 单卡工作区', () => {
     const item = wrapper.find('.grid-item-stub')
     expect(Number(item.attributes('data-h'))).toBe(24)
     expect(Number(item.attributes('data-w'))).toBe(12)
+    wrapper.unmount()
+  })
+
+  it('窗口间距区域与卡片边缘都可拖动窗口，卡片本身不参与拖动/缩放', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    expect(wrapper.findAll('.window-drag')).toHaveLength(4)
+    expect(wrapper.findAll('.card-drag')).toHaveLength(4)
+    expect(wrapper.find('.edge-handle').exists()).toBe(false)
+
+    const item = wrapper.find('.grid-item-stub')
+    expect(item.attributes('data-draggable')).toBe('false')
+    expect(item.attributes('data-resizable')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('卡片与窗口四边的间距为 10px（容器 padding 5px + 网格 margin 5px）', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const root = wrapper.find('.h-screen')
+    expect(root.exists()).toBe(true)
+    const rootClass = root.attributes('class')
+    expect(rootClass).toContain('pt-[5px]')
+    expect(rootClass).toContain('pl-[5px]')
+    expect(rootClass).toContain('pr-[5px]')
+    expect(rootClass).toContain('pb-[10px]')
     wrapper.unmount()
   })
 })

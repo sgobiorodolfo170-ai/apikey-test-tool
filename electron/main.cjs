@@ -872,8 +872,8 @@ function createWindow() {
     ...(state.maximized ? {} : { x: state.x, y: state.y }),
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
-    // 窗口尺寸由卡片尺寸驱动，禁用用户手动拖拽窗口边缘（也避免系统显示尺寸提示）
-    resizable: false,
+    // 卡片尺寸跟随窗口自适应；允许用户拖动窗口边缘调整主窗口尺寸
+    resizable: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

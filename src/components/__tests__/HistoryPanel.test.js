@@ -81,18 +81,18 @@ describe('HistoryPanel', () => {
     expect(wrapper.text()).not.toContain('清空')
   })
 
-  it('orders the tabs as 历史 / 渠道 / 中转站 / 调用监控 / 统计 / 配置', () => {
+  it('orders the tabs as 配置 / 历史 / 渠道 / 中转站 / 调用监控 / 统计', () => {
     const labels = wrapper
       .findAll('button')
       .map((b) => b.text())
       .filter((text) =>
-        ['历史', '渠道', '中转站', '调用监控', '统计', '配置'].some((label) =>
+        ['配置', '历史', '渠道', '中转站', '调用监控', '统计'].some((label) =>
           text.startsWith(label),
         ),
       )
       .map((text) => text.replace(/\s*\(\d+\)$/, ''))
 
-    expect(labels).toEqual(['历史', '渠道', '中转站', '调用监控', '统计', '配置'])
+    expect(labels).toEqual(['配置', '历史', '渠道', '中转站', '调用监控', '统计'])
   })
 
   it('switches to the relay tab', async () => {

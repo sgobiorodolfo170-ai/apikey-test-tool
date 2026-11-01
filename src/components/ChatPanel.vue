@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col h-full w-full min-h-0">
     <div class="bg-surface-alt rounded-card p-4 flex-1 flex flex-col min-h-0">
-      <div class="rounded-card p-4 flex-1 min-h-0 overflow-y-auto mb-4 chat-bg">
+      <div class="rounded-card p-4 flex-1 min-h-0 overflow-y-auto mb-4 chat-area-bg">
         <div v-if="chatStore.messages.length === 0" class="text-text-muted text-center">
           输入消息开始聊天
         </div>
@@ -492,6 +492,10 @@ export default {
 <style scoped>
 .chat-bg {
   background-color: #ffffff;
+}
+/* 聊天展示框：淡灰白底，与输入框的纯白区分开 */
+.chat-area-bg {
+  background-color: #f7f7f9;
 }
 .stream-cursor {
   display: inline-block;

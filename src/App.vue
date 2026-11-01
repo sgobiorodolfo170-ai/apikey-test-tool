@@ -1,9 +1,13 @@
 <template>
-  <!-- vue-grid-layout 卡片四周各有 margin(5px) 的内缩，因此左右/上 padding = 目标间距(20px) - margin；
-       右侧目标 30px → pr 25px；底部 30px 由 rowHeight 反推公式直接控制（见 applyScale） -->
+  <!-- 卡片与窗口四边保持 10px 间距：容器 padding 5px + 网格 margin 5px（底部由 rowHeight 反推公式控制，pb 即间距） -->
   <div
-    class="h-screen bg-canvas flex flex-col overflow-hidden pt-[15px] pl-[15px] pr-[25px] pb-[30px]"
+    class="h-screen bg-canvas flex flex-col overflow-hidden pt-[5px] pl-[5px] pr-[5px] pb-[10px]"
   >
+    <!-- 间距区域按住可拖动主窗口；窗口自身边缘缩放由系统边框负责 -->
+    <div class="window-drag window-drag-top"></div>
+    <div class="window-drag window-drag-bottom"></div>
+    <div class="window-drag window-drag-left"></div>
+    <div class="window-drag window-drag-right"></div>
     <div ref="containerRef" class="flex-1 min-h-0 w-full relative">
       <div :style="gridWidthStyle">
         <grid-layout
@@ -27,6 +31,7 @@
             :min-w="item.minW"
             :min-h="item.minH"
             :is-draggable="false"
+            :is-resizable="false"
             :drag-ignore-from="dragIgnoreFrom"
           >
             <div class="relative h-full w-full" :data-panel="item.i">
@@ -76,9 +81,11 @@
                   <ChatEvalPanel />
                 </div>
               </div>
-              <!-- 自定义边把手：覆盖整条右/下边缘，悬停显示调整大小光标 -->
-              <div class="vue-resizable-handle edge-handle edge-right"></div>
-              <div class="vue-resizable-handle edge-handle edge-bottom"></div>
+              <!-- 卡片边缘按住可拖动主窗口（仅覆盖最外侧 4px，不影响内部交互） -->
+              <div class="card-drag card-drag-top"></div>
+              <div class="card-drag card-drag-bottom"></div>
+              <div class="card-drag card-drag-left"></div>
+              <div class="card-drag card-drag-right"></div>
             </div>
           </grid-item>
         </grid-layout>
@@ -261,7 +268,7 @@ export default {
       const api = window.electronAPI
       if (!api?.setWindowCollapsed) return
       const frameW = Math.max(0, (window.outerWidth || 0) - window.innerWidth)
-      const target = Math.round(Math.max(COLLAPSED_PANE_MIN, paneWidth || 0) + 40 + frameW)
+      const target = Math.round(Math.max(COLLAPSED_PANE_MIN, paneWidth || 0) + 10 + frameW)
       const result = await api.setWindowCollapsed({ collapsed: true, width: target })
       if (!result?.ok) return
 
@@ -370,7 +377,7 @@ export default {
       const frameW = Math.max(0, (window.outerWidth || 0) - window.innerWidth)
       const frameH = Math.max(0, (window.outerHeight || 0) - window.innerHeight)
       const rowUnit = rowHeight.value + GRID_MARGIN[1]
-      const height = Math.round(45 + rows * rowUnit + frameH)
+      const height = Math.round(15 + rows * rowUnit + frameH)
 
       let width = null
       if (lastFittedCols && k !== lastFittedCols) {
@@ -549,28 +556,65 @@ export default {
   background: rgba(59, 130, 246, 0.5);
 }
 
-/* 卡片边缘缩放把手：覆盖整条右/下边缘，悬停显示对应调整光标 */
-.vue-grid-item .edge-handle {
-  position: absolute;
-  z-index: 1;
-  pointer-events: auto;
+/* 窗口间距区域（10px）：按住拖动主窗口 */
+.window-drag {
+  position: fixed;
+  z-index: 40;
+  -webkit-app-region: drag;
 }
-.vue-grid-item .edge-handle.edge-right {
+.window-drag-top {
   top: 0;
-  right: 0;
-  width: 8px;
-  height: 100%;
-  cursor: e-resize;
-}
-.vue-grid-item .edge-handle.edge-bottom {
   left: 0;
-  bottom: 0;
-  width: 100%;
-  height: 8px;
-  cursor: s-resize;
+  right: 0;
+  height: 10px;
 }
-/* 右下角区域交给库自带的 se-resize 把手 */
-.vue-grid-item > .vue-resizable-handle {
-  z-index: 2;
+.window-drag-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.window-drag-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+}
+.window-drag-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+}
+
+/* 卡片边缘（最外侧 4px）：按住拖动主窗口，不影响卡片内部交互 */
+.card-drag {
+  position: absolute;
+  z-index: 20;
+  -webkit-app-region: drag;
+}
+.card-drag-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+}
+.card-drag-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+}
+.card-drag-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+}
+.card-drag-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 4px;
 }
 </style>
