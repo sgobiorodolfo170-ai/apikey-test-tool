@@ -441,7 +441,7 @@ function extractUsage(chunks, contentType = '') {
   }
 }
 
-function recordStat({ provider, model, status, ms, error, usage }) {
+function recordStat({ provider, model, status, ms, error, usage, cached = false }) {
   const key = statsKeyOf(provider, model)
   const at = new Date().toISOString()
   const ok = !error && status >= 200 && status < 400
@@ -476,8 +476,16 @@ function recordStat({ provider, model, status, ms, error, usage }) {
       ? 'rate_limited'
       : 'failed'
   if (usage) {
-    entry.usage = usage
-    recordDailyUsage(model || entry.model, usage)
+    if (cached) {
+      // 命中的是缓存：没有真实 token 消耗，只累计「缓存节省」
+      const prompt = (entry.cachedUsage?.prompt || 0) + (Number(usage.prompt) || 0)
+      const completion = (entry.cachedUsage?.completion || 0) + (Number(usage.completion) || 0)
+      entry.cachedUsage = { prompt, completion, total: prompt + completion }
+      recordDailyUsage(model || entry.model, usage, { cached: true })
+    } else {
+      entry.usage = usage
+      recordDailyUsage(model || entry.model, usage)
+    }
   }
 
   if (statsByKey.size > MAX_STATS) {
@@ -505,6 +513,35 @@ function clearStats() {
 const MAX_DAILY_DAYS = 400
 const dailyTokens = new Map()
 
+// 每日用量桶：真实消耗与「缓存节省」共用同一结构，便于图表/统计复用
+function createUsageBucket() {
+  return { prompt: 0, completion: 0, total: 0, calls: 0, models: new Map() }
+}
+
+// 从持久化结构恢复用量桶（旧文件没有 cached 字段时得到空桶）
+function restoreUsageBucket(value) {
+  const models = new Map()
+  if (Array.isArray(value?.models)) {
+    for (const modelEntry of value.models) {
+      if (!Array.isArray(modelEntry) || typeof modelEntry[0] !== 'string') continue
+      const item = modelEntry[1] || {}
+      models.set(modelEntry[0], {
+        prompt: Number(item.prompt) || 0,
+        completion: Number(item.completion) || 0,
+        total: Number(item.total) || 0,
+        calls: Number(item.calls) || 0,
+      })
+    }
+  }
+  return {
+    prompt: Number(value?.prompt) || 0,
+    completion: Number(value?.completion) || 0,
+    total: Number(value?.total) || 0,
+    calls: Number(value?.calls) || 0,
+    models,
+  }
+}
+
 // 用本地时间切日：用户看到的“今天”与系统日期一致
 function localDateKey(date = new Date()) {
   const year = date.getFullYear()
@@ -522,7 +559,7 @@ function pruneDailyTokens(now = new Date()) {
   }
 }
 
-function addDailyUsage(date, model, usage) {
+function addDailyUsage(date, model, usage, { cached = false } = {}) {
   if (!usage) return
   const prompt = Number(usage.prompt) || 0
   const completion = Number(usage.completion) || 0
@@ -532,19 +569,21 @@ function addDailyUsage(date, model, usage) {
   const day = localDateKey(date)
   let entry = dailyTokens.get(day)
   if (!entry) {
-    entry = { prompt: 0, completion: 0, total: 0, calls: 0, models: new Map() }
+    entry = { ...createUsageBucket(), cached: createUsageBucket() }
     dailyTokens.set(day, entry)
   }
-  entry.calls += 1
-  entry.prompt += prompt
-  entry.completion += completion
-  entry.total += total
+  // 缓存命中不产生真实消耗：单独累计到 cached 桶，避免把省下的 token 算进用量
+  const bucket = cached ? (entry.cached ||= createUsageBucket()) : entry
+  bucket.calls += 1
+  bucket.prompt += prompt
+  bucket.completion += completion
+  bucket.total += total
 
   const name = model || '未知模型'
-  let item = entry.models.get(name)
+  let item = bucket.models.get(name)
   if (!item) {
     item = { prompt: 0, completion: 0, total: 0, calls: 0 }
-    entry.models.set(name, item)
+    bucket.models.set(name, item)
   }
   item.calls += 1
   item.prompt += prompt
@@ -554,8 +593,8 @@ function addDailyUsage(date, model, usage) {
   pruneDailyTokens()
 }
 
-function recordDailyUsage(model, usage) {
-  addDailyUsage(new Date(), model, usage)
+function recordDailyUsage(model, usage, options) {
+  addDailyUsage(new Date(), model, usage, options)
 }
 
 // 升级到按日统计之前的旧数据文件没有 daily 字段：用已持久化的请求日志回填，
@@ -565,7 +604,10 @@ function backfillDailyFromLogs() {
   for (const log of ordered) {
     const at = new Date(log.at)
     if (Number.isNaN(at.getTime())) continue
-    addDailyUsage(at, log.model, log.usage)
+    // 命中缓存的日志只有 cachedUsage，回填时按「缓存节省」记账，不能算成真实消耗
+    addDailyUsage(at, log.model, log.cached ? log.cachedUsage : log.usage, {
+      cached: Boolean(log.cached),
+    })
   }
   // 回填后尽快把 daily 写盘，避免只存在内存里
   if (dailyTokens.size > 0) schedulePersist()
@@ -573,6 +615,16 @@ function backfillDailyFromLogs() {
 
 // 图表数据：按日期升序，models 按 token 用量降序
 function getTokenHistory() {
+  const summarize = (bucket) => ({
+    prompt: bucket?.prompt || 0,
+    completion: bucket?.completion || 0,
+    total: bucket?.total || 0,
+    calls: bucket?.calls || 0,
+    models: [...(bucket?.models || new Map())]
+      .map(([model, item]) => ({ model, ...item }))
+      .sort((a, b) => b.total - a.total),
+  })
+
   return [...dailyTokens.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, entry]) => ({
@@ -581,9 +633,9 @@ function getTokenHistory() {
       completion: entry.completion,
       total: entry.total,
       calls: entry.calls,
-      models: [...entry.models.entries()]
-        .map(([model, item]) => ({ model, ...item }))
-        .sort((a, b) => b.total - a.total),
+      models: summarize(entry).models,
+      // 缓存命中省下的 tokens（不参与真实用量，单独展示）
+      cached: summarize(entry.cached),
     }))
 }
 
@@ -648,25 +700,9 @@ function attachStorage(file) {
         if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue
         const value = entry[1]
         if (!value || typeof value !== 'object') continue
-        const models = new Map()
-        if (Array.isArray(value.models)) {
-          for (const modelEntry of value.models) {
-            if (!Array.isArray(modelEntry) || typeof modelEntry[0] !== 'string') continue
-            const item = modelEntry[1] || {}
-            models.set(modelEntry[0], {
-              prompt: Number(item.prompt) || 0,
-              completion: Number(item.completion) || 0,
-              total: Number(item.total) || 0,
-              calls: Number(item.calls) || 0,
-            })
-          }
-        }
         dailyTokens.set(entry[0], {
-          prompt: Number(value.prompt) || 0,
-          completion: Number(value.completion) || 0,
-          total: Number(value.total) || 0,
-          calls: Number(value.calls) || 0,
-          models,
+          ...restoreUsageBucket(value),
+          cached: restoreUsageBucket(value.cached),
         })
       }
     } else {
@@ -701,6 +737,15 @@ function persistNow({ sync = false } = {}) {
           total: entry.total,
           calls: entry.calls,
           models: [...entry.models.entries()],
+          cached: entry.cached
+            ? {
+                prompt: entry.cached.prompt,
+                completion: entry.cached.completion,
+                total: entry.cached.total,
+                calls: entry.cached.calls,
+                models: [...entry.cached.models.entries()],
+              }
+            : undefined,
         },
       ]),
       quota,
@@ -1536,7 +1581,9 @@ async function handleJsonProxy(req, res, upstreamPath, cacheable, client = '') {
         requestId,
         keyTail: '',
         failover: false,
-        usage: hit.usage,
+        // 命中缓存没有真实消耗：usage 留空，节省量单独记录，避免统计虚高
+        usage: null,
+        cachedUsage: hit.usage,
         cached: true,
       })
       recordStat({
@@ -1545,6 +1592,7 @@ async function handleJsonProxy(req, res, upstreamPath, cacheable, client = '') {
         status: hit.status,
         ms: 0,
         usage: hit.usage,
+        cached: true,
       })
       sendCachedResponse(res, hit)
       return
@@ -1606,7 +1654,9 @@ async function handle(req, res) {
   }
 
   if (req.method === 'POST' && (path === '/v1/embeddings' || path === '/embeddings')) {
-    await handleJsonProxy(req, res, '/embeddings', false, client.label)
+    // embeddings 是确定性接口（同样的输入必然得到同样的向量），重复调用比例高，
+    // 精确缓存对它的收益最大
+    await handleJsonProxy(req, res, '/embeddings', true, client.label)
     return
   }
 

@@ -4,6 +4,10 @@
       <span class="text-[14px] text-text-muted flex-1 truncate">
         共 {{ summary.calls }} 次调用 · tokens {{ formatTokenAmount(summary.total) }}（输入
         {{ formatTokenAmount(summary.prompt) }} / 输出 {{ formatTokenAmount(summary.completion) }}）
+        <template v-if="cachedSummary.calls > 0">
+          · 缓存节省 {{ formatTokenAmount(cachedSummary.total) }}（{{ cachedSummary.calls }}
+          次命中）
+        </template>
         · 每 2 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>
@@ -193,6 +197,17 @@ export default {
       return result
     })
 
+    // 缓存命中省下的 tokens：按日统计持久化，所以用 tokenHistory 汇总（不受日志条数上限影响）
+    const cachedSummary = computed(() => {
+      const result = { calls: 0, total: 0 }
+      for (const day of relayStore.tokenHistory) {
+        if (!day.cached) continue
+        result.calls += Number(day.cached.calls) || 0
+        result.total += Number(day.cached.total) || 0
+      }
+      return result
+    })
+
     const refresh = async () => {
       await relayStore.loadLogs()
       await relayStore.loadTokenHistory()
@@ -227,6 +242,7 @@ export default {
       keyRows,
       modelRows,
       summary,
+      cachedSummary,
       refresh,
       formatNumber,
       formatTokenAmount,

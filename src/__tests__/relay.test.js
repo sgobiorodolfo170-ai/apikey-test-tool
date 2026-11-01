@@ -526,6 +526,60 @@ describe('中转增强：别名 / embeddings / 缓存', () => {
     expect(second.headers.get('x-relay-cache')).toBe('hit')
     expect(relay.getStats().some((item) => item.provider === '缓存')).toBe(true)
   })
+
+  it('serves identical embeddings requests from cache', async () => {
+    relay.clearCache()
+    relay.clearStats()
+    calls.length = 0
+    const base = `http://127.0.0.1:${info.port}/v1`
+    const body = JSON.stringify({ model: 'real-model', input: 'hello' })
+    const request = () =>
+      fetch(`${base}/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+
+    const first = await request()
+    const second = await request()
+
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    expect(calls.length).toBe(1)
+    expect(second.headers.get('x-relay-cache')).toBe('hit')
+  })
+
+  it('keeps cached tokens out of real usage and reports savings separately', async () => {
+    relay.clearCache()
+    relay.clearStats()
+    calls.length = 0
+    const base = `http://127.0.0.1:${info.port}/v1`
+    const body = JSON.stringify({
+      model: 'real-model',
+      messages: [{ role: 'user', content: 'count tokens' }],
+    })
+    const request = () =>
+      fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+
+    await request()
+    await request()
+
+    const today = relay.getTokenHistory().at(-1)
+    // 真实消耗只算第一次调用（上游 usage: 3 输入 + 2 输出）
+    expect(today.total).toBe(5)
+    expect(today.calls).toBe(1)
+    // 第二次命中缓存，单独记为「缓存节省」
+    expect(today.cached.calls).toBe(1)
+    expect(today.cached.total).toBe(5)
+
+    const cacheStat = relay.getStats().find((item) => item.provider === '缓存')
+    expect(cacheStat.usage).toBeNull()
+    expect(cacheStat.cachedUsage).toEqual({ prompt: 3, completion: 2, total: 5 })
+  })
 })
 
 describe('冷却 / 熔断', () => {
@@ -655,6 +709,49 @@ describe('日志与统计持久化', () => {
     const history = relay.getTokenHistory()
     expect(history.length).toBeGreaterThan(0)
     expect(history.at(-1).total).toBeGreaterThan(0)
+  })
+
+  it('persists cached savings separately and restores them', async () => {
+    // 开启缓存后跑两次相同请求，第二次命中；真实用量只应记一次
+    const cacheInfo = await relay.start({
+      port: 0,
+      cache: { enabled: true, ttlMs: 60000 },
+      providers: [
+        {
+          id: 'p',
+          name: '持久化上游',
+          baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
+          models: ['m'],
+          enabled: true,
+        },
+      ],
+    })
+    relay.clearCache()
+    relay.clearStats()
+    const base = `http://127.0.0.1:${cacheInfo.port}/v1`
+    const body = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'persist' }] })
+    const request = () =>
+      fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+
+    await request()
+    const second = await request()
+    expect(second.headers.get('x-relay-cache')).toBe('hit')
+
+    await relay.persistNow()
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const today = saved.daily.at(-1)[1]
+    expect(today.total).toBe(3)
+    expect(today.calls).toBe(1)
+    expect(today.cached).toMatchObject({ total: 3, calls: 1 })
+
+    relay.attachStorage(file)
+    const history = relay.getTokenHistory()
+    expect(history.at(-1).total).toBe(3)
+    expect(history.at(-1).cached.total).toBe(3)
   })
 })
 
