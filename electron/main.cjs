@@ -17,7 +17,7 @@ const os = require('os')
 const { spawn } = require('child_process')
 const relay = require('./relay.cjs')
 const { isPathSafe: isPathInside } = require('./lib/path-safety.cjs')
-const { normalizeWindowBounds } = require('./lib/window-bounds.cjs')
+const { normalizeWindowBounds, snapshotWindowState } = require('./lib/window-bounds.cjs')
 const { resolveDataDir, migrateDataFiles } = require('./lib/data-dir.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
@@ -90,10 +90,12 @@ const ipcHandlers = [
   'relay-status',
   'relay-update',
   'relay-models',
+  'relay-test-key',
   'relay-logs',
   'relay-clear-logs',
   'relay-stats',
   'relay-stats-clear',
+  'relay-token-history',
   'http-abort',
   'secure-store',
   'secure-available',
@@ -152,13 +154,27 @@ function loadWindowState() {
 function saveWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (collapsedWindowState) return
+  const state = snapshotWindowState(mainWindow)
+  if (!state) return
+
+  const payload = JSON.stringify(state, null, 2)
+  const tempFile = `${STATE_FILE}.tmp`
   try {
-    const bounds = mainWindow.getBounds()
-    const maximized = mainWindow.isMaximized()
-    const state = { ...bounds, maximized }
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
+    // 先写临时文件再重命名，进程在写入途中退出也不会留下半截 JSON
+    fs.writeFileSync(tempFile, payload)
+    fs.renameSync(tempFile, STATE_FILE)
   } catch {
-    // 窗口状态写入失败不影响应用运行
+    // 临时文件被占用/重命名失败时退回直接写，至少保留本次窗口状态
+    try {
+      fs.writeFileSync(STATE_FILE, payload)
+    } catch {
+      // 窗口状态写入失败不影响应用运行
+    }
+    try {
+      fs.unlinkSync(tempFile)
+    } catch {
+      // 临时文件可能未创建或已被清理
+    }
   }
 }
 
@@ -1289,7 +1305,7 @@ ipcMain.handle('relay-stats', async () => ({ ok: true, stats: relay.getStats() }
 
 ipcMain.handle('relay-token-history', async () => ({
   ok: true,
-  history: relay.getTokenHistory(),
+  ...relay.getTokenUsage(),
 }))
 
 ipcMain.handle('relay-stats-clear', async () => {
@@ -1304,6 +1320,9 @@ ipcMain.handle('relay-models', async (event, payload) => {
     return { ok: false, error: error.message }
   }
 })
+
+// 单把 Key 测通：避免一次拉取多把 Key 时被第一把可用 Key 掩盖失败
+ipcMain.handle('relay-test-key', async (event, payload) => relay.testKey(payload))
 
 ipcMain.handle('http-abort', async (event, requestId) => {
   const controller = activeHttpRequests.get(String(requestId))

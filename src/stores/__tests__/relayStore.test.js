@@ -213,6 +213,69 @@ describe('relayStore', () => {
     expect(store.providers[0].models).toEqual(['deepseek-v4-flash'])
   })
 
+  it('upgrades 端砚 legacy quota to calendar-month without touching other providers', async () => {
+    readRelay.mockResolvedValue({
+      port: 8787,
+      providers: [
+        {
+          id: 'd1',
+          name: '书生·端砚',
+          baseUrl: 'https://discovery-api.intern-ai.org.cn/v1',
+          presetId: 'duanyan',
+          models: ['glm-5.3'],
+          enabled: true,
+          maxConcurrency: 4,
+          rpmLimit: 50,
+          apiKeys: ['sk-a', 'sk-b'],
+          quota: {
+            enabled: true,
+            metric: 'credit',
+            limit5h: 10,
+            limitWeek: 50,
+            creditsPerMillionTokens: 4,
+            keyGroups: { 'sk-a': '账号A' },
+          },
+        },
+        {
+          id: 's1',
+          name: '商汤日日新',
+          baseUrl: 'https://token.sensenova.cn/v1',
+          presetId: 'sensenova',
+          models: ['glm-5.2'],
+          enabled: true,
+          maxConcurrency: 2,
+          rpmLimit: 15,
+          quota: { enabled: true, metric: 'request', limit5h: 1500, limitWeek: 15000 },
+        },
+      ],
+    })
+    mountBridge()
+    const store = useRelayStore()
+
+    await store.load()
+
+    const duanyan = store.providers[0]
+    expect(duanyan.strategy).toBe('duanyan')
+    expect(duanyan.maxConcurrency).toBe(8)
+    expect(duanyan.queueTimeoutMs).toBe(30000)
+    expect(duanyan.quota).toMatchObject({
+      windowMode: 'calendar-month',
+      limitMonth: 10,
+      limit5h: 0,
+      limitWeek: 0,
+      // 用户已有的 Key 共享组要保留
+      keyGroups: { 'sk-a': '账号A' },
+    })
+    expect(duanyan.quota.modelRates['glm-5.3']).toBe(28)
+
+    // 其它提供商完全不受影响
+    const sensenova = store.providers[1]
+    expect(sensenova.strategy).toBeUndefined()
+    expect(sensenova.maxConcurrency).toBe(2)
+    expect(sensenova.rpmLimit).toBe(15)
+    expect(sensenova.quota).toMatchObject({ limit5h: 1500, limitWeek: 15000 })
+  })
+
   it('normalizes quota when adding a provider', async () => {
     mountBridge()
     const store = useRelayStore()
@@ -234,11 +297,24 @@ describe('relayStore', () => {
     expect(provider.quota).toEqual({
       enabled: true,
       metric: 'credit',
+      windowMode: 'rolling',
+      limitMonth: 0,
       limit5h: 10,
       limitWeek: 50,
       creditsPerMillionTokens: 4,
       confirmStrikes: 3,
       confirmIntervalMinutes: 1,
+      confirmSpanMinutes: 0,
+      burstWindowMinutes: 0,
+      burstStrikes: 0,
+      reserveRatio: 0,
+      warmupMinutes: 0,
+      perModel: false,
+      group: '',
+      groups: [],
+      keyGroups: {},
+      modelLimits: {},
+      modelRates: {},
     })
   })
 

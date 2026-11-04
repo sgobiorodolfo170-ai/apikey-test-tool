@@ -2,7 +2,7 @@
   <div class="flex flex-col h-full min-h-0">
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 flex-shrink-0">
       <span class="text-[14px] text-text-muted flex-1 truncate">
-        共 {{ summary.total }} 个请求 · 请求成功率 {{ summary.rate }}% · 尝试成功率
+        共 {{ summary.total }} 个请求（最近 3 天） · 请求成功率 {{ summary.rate }}% · 尝试成功率
         {{ summary.attemptRate }}% · 故障转移 {{ summary.failovers }} 次 · 每 2 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>

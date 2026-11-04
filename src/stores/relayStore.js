@@ -56,6 +56,8 @@ export const useRelayStore = defineStore('relay', {
     logsLoading: false,
     stats: [],
     tokenHistory: [],
+    tokenHourly: [],
+    keyUsage: [],
   }),
   getters: {
     baseUrl: (state) => state.status?.baseUrl || `http://127.0.0.1:${state.port}/v1`,
@@ -86,11 +88,40 @@ export const useRelayStore = defineStore('relay', {
         // 老配置没有额度窗口：按预设补上（商汤按次数、端砚按墨点），不改动用户已填的模型
         let quotaPatched = false
         this.providers = (config.providers || []).map((provider) => {
-          if (provider.quota) return provider
           const preset = RELAY_PRESETS.find((item) => item.id === provider.presetId)
-          if (!preset?.quota) return provider
-          quotaPatched = true
-          return { ...provider, quota: normalizeQuota(preset.quota) }
+          let next = provider
+          if (!next.quota) {
+            if (!preset?.quota) return next
+            next = { ...next, quota: normalizeQuota(preset.quota) }
+            quotaPatched = true
+          }
+          // 端砚专项策略升级：旧配置还是滚动 5h/7d 时切到「自然月墨点 + 8 并发 + 30s 排队」
+          // 只改端砚（presetId = duanyan），其它提供商的配置原样保留
+          if (preset?.strategy === 'duanyan' && next.quota?.windowMode !== 'calendar-month') {
+            next = {
+              ...next,
+              strategy: 'duanyan',
+              // 4 是历史默认值，未显式改过时升级到预设的 8
+              maxConcurrency:
+                Number(next.maxConcurrency) > 0 && Number(next.maxConcurrency) !== 4
+                  ? Number(next.maxConcurrency)
+                  : preset.maxConcurrency,
+              rpmLimit: Number(next.rpmLimit) > 0 ? Number(next.rpmLimit) : preset.rpmLimit,
+              queueTimeoutMs:
+                Number(next.queueTimeoutMs) > 0
+                  ? Number(next.queueTimeoutMs)
+                  : preset.queueTimeoutMs,
+              quota: normalizeQuota({
+                ...preset.quota,
+                // 保留用户的 Key 共享组，避免升级把分组冲掉
+                group: next.quota?.group || '',
+                groups: next.quota?.groups || [],
+                keyGroups: next.quota?.keyGroups || {},
+              }),
+            }
+            quotaPatched = true
+          }
+          return next
         })
         this.initialized = true
         // 补上的额度要落盘，主进程下次自启动才能带上窗口配置
@@ -279,6 +310,9 @@ export const useRelayStore = defineStore('relay', {
         enabled: payload.enabled !== false,
         maxConcurrency: Number(payload.maxConcurrency) > 0 ? Number(payload.maxConcurrency) : 4,
         rpmLimit: Number(payload.rpmLimit) > 0 ? Number(payload.rpmLimit) : 0,
+        // 端砚专项策略：限频按 Key × 模型计数、8 秒批次冷却；其它提供商留空即保持原口径
+        strategy: payload.strategy || (payload.presetId === 'duanyan' ? 'duanyan' : ''),
+        queueTimeoutMs: Number(payload.queueTimeoutMs) > 0 ? Number(payload.queueTimeoutMs) : 0,
         quota: normalizeQuota(payload.quota),
         presetId: payload.presetId,
         createdAt: new Date().toISOString(),
@@ -358,15 +392,21 @@ export const useRelayStore = defineStore('relay', {
       if (api?.clearStats) await api.clearStats()
       this.stats = []
       this.tokenHistory = []
+      this.tokenHourly = []
+      this.keyUsage = []
       useToastStore().addToast('已清空调用统计', 'info')
     },
 
-    // 日 / 周 / 月图表：主进程按日持久化的 token 用量
+    // 时 / 日 / 周 / 月图表与按 Key 统计：主进程持久化，不受日志条数上限影响
     async loadTokenHistory() {
       const api = bridge()
       if (!api?.tokenHistory) return
       const result = await api.tokenHistory()
-      if (result?.ok) this.tokenHistory = result.history || []
+      if (result?.ok) {
+        this.tokenHistory = result.history || []
+        this.tokenHourly = result.hourly || []
+        this.keyUsage = result.keys || []
+      }
     },
 
     // 表单里的模型下拉：先拉一次上游列表，不写入已保存的提供商
@@ -384,6 +424,13 @@ export const useRelayStore = defineStore('relay', {
         return []
       }
       return result.models || []
+    },
+
+    // 单把 Key 测通：直接透传主进程结果（ok / error / ms / models）
+    async testKey(baseUrl, apiKey) {
+      const api = bridge()
+      if (!api?.testKey) return { ok: false, error: '当前环境不支持测通' }
+      return api.testKey({ baseUrl, apiKey })
     },
 
     // 从上游拉取模型列表，省得手抄模型名

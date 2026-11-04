@@ -21,4 +21,23 @@ function normalizeWindowBounds(state, displays = []) {
   return visible ? { x, y, width, height } : { width, height }
 }
 
-module.exports = { normalizeWindowBounds, DEFAULT_SIZE }
+// 取用于持久化的窗口状态。最大化/最小化时 getBounds() 可能是当前状态的边界
+// （最大化即屏幕大小），直接保存会让下次「取消最大化」恢复成屏幕尺寸；
+// normalBounds 始终是用户调整后的正常尺寸，两种状态统一用它。
+function snapshotWindowState(win) {
+  if (!win || win.isDestroyed?.() === true) return null
+  const readBounds = typeof win.getNormalBounds === 'function' ? win.getNormalBounds : win.getBounds
+  if (typeof readBounds !== 'function') return null
+  const bounds = readBounds.call(win)
+  if (!bounds || typeof bounds !== 'object') return null
+
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: win.isMaximized?.() === true,
+  }
+}
+
+module.exports = { normalizeWindowBounds, snapshotWindowState, DEFAULT_SIZE }

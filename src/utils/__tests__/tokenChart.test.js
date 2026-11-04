@@ -1,14 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import {
   CHART_GRANULARITIES,
+  HISTORY_SPANS,
+  buildHourlyTokenSeries,
   buildTokenSeries,
   collectTopModels,
   createTokenSlots,
   dateKeyOf,
   formatTokenAmount,
   heatLevel,
+  hourKeyOf,
   parseDateKey,
   startOfWeek,
+  summarizeModelTotals,
   summarizeTokenSeries,
 } from '../tokenChart.js'
 
@@ -139,7 +143,61 @@ describe('tokenChart', () => {
     expect(formatTokenAmount(1_200_000_000)).toBe('1.2B')
   })
 
-  it('exposes the day / week / month granularities', () => {
-    expect(CHART_GRANULARITIES.map((item) => item.label)).toEqual(['日', '周', '月'])
+  it('exposes the hour / day / week / month granularities', () => {
+    expect(CHART_GRANULARITIES.map((item) => item.label)).toEqual(['时', '日', '周', '月'])
+  })
+
+  it('creates 24 continuous hour slots ending with the current hour', () => {
+    const now = new Date(2026, 10, 1, 10, 30)
+    const slots = createTokenSlots('hour', now)
+    expect(slots).toHaveLength(24)
+    expect(slots[23].key).toBe('2026-11-01T10')
+    expect(slots[0].key).toBe('2026-10-31T11')
+    expect(slots[23].label).toBe('10:00')
+  })
+
+  it('can create the full history window for chart panning', () => {
+    const now = new Date(2026, 10, 1, 10, 30)
+    expect(createTokenSlots('day', now, 400)).toHaveLength(400)
+    expect(createTokenSlots('week', now, 52)).toHaveLength(52)
+    expect(createTokenSlots('month', now, 13)).toHaveLength(13)
+    expect(createTokenSlots('hour', now, 168)).toHaveLength(168)
+    expect(createTokenSlots('day', now, 400).at(-1).key).toBe('2026-11-01')
+    expect(HISTORY_SPANS.day).toBe(400)
+    expect(HISTORY_SPANS.hour).toBe(168)
+  })
+
+  it('aggregates hourly usage and model totals', () => {
+    const now = new Date(2026, 10, 1, 10, 30)
+    const hourly = [
+      {
+        hour: '2026-11-01T09',
+        prompt: 40,
+        completion: 20,
+        total: 60,
+        calls: 1,
+        models: [{ model: 'model-a', prompt: 40, completion: 20, total: 60, calls: 1 }],
+      },
+      {
+        hour: hourKeyOf(now),
+        prompt: 10,
+        completion: 5,
+        total: 15,
+        calls: 1,
+        models: [{ model: 'model-a', prompt: 10, completion: 5, total: 15, calls: 1 }],
+      },
+    ]
+
+    const series = buildHourlyTokenSeries(hourly, now)
+    expect(series[23].key).toBe('2026-11-01T10')
+    expect(series[23].total).toBe(15)
+    expect(series[22].total).toBe(60)
+    expect(summarizeTokenSeries(series)).toEqual({ total: 75, peak: 60, active: 2 })
+    expect(summarizeModelTotals(series)['model-a']).toEqual({
+      prompt: 50,
+      completion: 25,
+      total: 75,
+      calls: 2,
+    })
   })
 })

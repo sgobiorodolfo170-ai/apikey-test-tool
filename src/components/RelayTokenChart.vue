@@ -18,6 +18,16 @@
           {{ item.label }}统计
         </button>
       </div>
+      <span class="text-[13px] text-text-muted">按住图表左右拖动查看历史</span>
+      <button
+        v-if="canPanBack"
+        type="button"
+        class="btn-ghost text-[13px] px-1.5 py-0.5"
+        title="回到最新的统计数据"
+        @click="resetPan"
+      >
+        回到最新
+      </button>
       <span class="text-[13px] text-text-muted ml-auto">
         合计 {{ formatTokenAmount(summary.total) }} tokens · 峰值
         {{ formatTokenAmount(summary.peak) }} · 有量 {{ summary.active }} {{ unit }}
@@ -34,9 +44,16 @@
     <div v-else class="rounded-card border border-border bg-surface px-1.5 pt-1.5 pb-1">
       <svg
         :viewBox="`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`"
-        class="w-full block"
+        class="w-full block select-none"
+        :class="dragging ? 'cursor-grabbing' : 'cursor-grab'"
+        style="touch-action: pan-y"
         role="img"
         :aria-label="`中转站 token ${activeLabel}统计`"
+        @pointerdown="onDragStart"
+        @pointermove="onDragMove"
+        @pointerup="onDragEnd"
+        @pointerleave="onDragEnd"
+        @pointercancel="onDragEnd"
       >
         <!-- 横向参考线 + 纵轴刻度 -->
         <g>
@@ -143,7 +160,7 @@
             class="inline-block w-2.5 h-2.5 rounded-[2px] flex-shrink-0"
             :style="{ background: line.color }"
           ></i>
-          <span class="truncate" :title="line.model">{{ line.model }}</span>
+          <span class="truncate" :title="modelTitle(line.model)">{{ line.model }}</span>
         </span>
         <span v-if="lines.length === 0" class="text-[13px] text-text-muted">暂无模型用量</span>
         <span class="ml-auto inline-flex items-center gap-1 text-[13px] text-text-muted">
@@ -162,14 +179,17 @@
 </template>
 
 <script>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
 import {
   CHART_GRANULARITIES,
+  HISTORY_SPANS,
+  buildHourlyTokenSeries,
   buildTokenSeries,
   collectTopModels,
   formatTokenAmount,
   heatLevel,
+  summarizeModelTotals,
   summarizeTokenSeries,
 } from '../utils/tokenChart.js'
 
@@ -181,9 +201,10 @@ const PLOT_TOP = 18
 const PLOT_BOTTOM = 206
 const LABEL_Y = 238
 
-// 柱形图使用实色柱体，颜色越深代表 token 用量越大
-const HEAT_COLORS = ['#e8e0d6', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8']
-const LINE_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9']
+// 柱形图使用冷色系：颜色越深代表 token 用量越大
+const HEAT_COLORS = ['#e0f2fe', '#bae6fd', '#7dd3fc', '#38bdf8', '#0284c7']
+// 模型曲线使用暖色系，与冷色柱子形成对比
+const LINE_COLORS = ['#dc2626', '#f97316', '#f59e0b', '#e11d48', '#ea580c', '#d97706']
 
 // 让纵轴上界是一个好看的整数，曲线不会顶到画布边缘
 function niceMax(value) {
@@ -198,17 +219,45 @@ export default {
   name: 'RelayTokenChart',
   setup() {
     const relayStore = useRelayStore()
-    const active = ref('day')
+    // 默认展示最近 24 小时，便于快速看到实时用量
+    const active = ref('hour')
+    // null 表示跟随最新数据；拖动后保存具体起始索引
+    const startIndex = ref(null)
+    const dragging = ref(false)
+    let dragStartX = 0
+    let dragStartIndex = 0
+    // 屏幕像素 -> viewBox 坐标的换算比例，避免图表宽度不同导致拖动灵敏度变化
+    let dragScale = 1
     let timer = null
 
-    const series = computed(() => buildTokenSeries(relayStore.tokenHistory, active.value))
+    // 一屏显示的点数（时 24 / 日 30 / 周 12 / 月 12）
+    const windowSize = computed(
+      () => CHART_GRANULARITIES.find((item) => item.id === active.value)?.span || 30,
+    )
+
+    // 完整历史（小时 7 天 / 日 400 天 / 周 52 / 月 13），拖动时在视窗内截取
+    const allSeries = computed(() => {
+      const span = HISTORY_SPANS[active.value] || windowSize.value
+      return active.value === 'hour'
+        ? buildHourlyTokenSeries(relayStore.tokenHourly, undefined, span)
+        : buildTokenSeries(relayStore.tokenHistory, active.value, undefined, span)
+    })
+
+    const maxStart = computed(() => Math.max(0, allSeries.value.length - windowSize.value))
+    const clampedStart = computed(() => {
+      const start = startIndex.value === null ? maxStart.value : startIndex.value
+      return Math.min(Math.max(0, start), maxStart.value)
+    })
+    const series = computed(() =>
+      allSeries.value.slice(clampedStart.value, clampedStart.value + windowSize.value),
+    )
+    const canPanBack = computed(() => clampedStart.value < maxStart.value)
     const summary = computed(() => summarizeTokenSeries(series.value))
-    const hasData = computed(() => series.value.some((slot) => slot.total > 0))
+    // 是否展示图表看完整历史，避免拖到早期空档时整块图表消失、无法拖回
+    const hasData = computed(() => allSeries.value.some((slot) => slot.total > 0))
     const maxTotal = computed(() => Math.max(1, ...series.value.map((slot) => slot.total)))
     const yMax = computed(() => niceMax(maxTotal.value))
-    const step = computed(
-      () => (VIEW_WIDTH - PAD_LEFT - PAD_RIGHT) / Math.max(1, series.value.length),
-    )
+    const step = computed(() => (VIEW_WIDTH - PAD_LEFT - PAD_RIGHT) / Math.max(1, windowSize.value))
     const cellWidth = computed(() => Math.min(40, Math.max(6, step.value - 4)))
     const plotHeight = PLOT_BOTTOM - PLOT_TOP
     const unit = computed(
@@ -237,6 +286,21 @@ export default {
     })
 
     const topModels = computed(() => collectTopModels(series.value, 5))
+    const modelTotals = computed(() => summarizeModelTotals(series.value))
+
+    // 图例悬停：展示该模型在当前统计窗口内的总用量
+    const modelTitle = (model) => {
+      const stat = modelTotals.value[model]
+      if (!stat) return model
+      const parts = [`合计 ${formatTokenAmount(stat.total)} tokens`]
+      if (stat.prompt > 0 || stat.completion > 0) {
+        parts.push(
+          `输入 ${formatTokenAmount(stat.prompt)} / 输出 ${formatTokenAmount(stat.completion)}`,
+        )
+      }
+      parts.push(`${stat.calls} 次调用`)
+      return `${model} · ${parts.join(' · ')}`
+    }
 
     const lines = computed(() =>
       topModels.value.map((model, index) => ({
@@ -255,6 +319,7 @@ export default {
 
     const showLabel = (index) => {
       const length = series.value.length
+      if (active.value === 'hour') return index % 2 === 1 || index === length - 1
       if (length <= 12) return true
       return index % 5 === 0 || index === length - 1
     }
@@ -271,6 +336,49 @@ export default {
     }
 
     const load = () => relayStore.loadTokenHistory()
+
+    // 切换粒度后回到最新数据
+    watch(active, () => {
+      startIndex.value = null
+    })
+
+    const clampStartValue = (value) => Math.min(Math.max(0, Math.round(value)), maxStart.value)
+
+    const resetPan = () => {
+      startIndex.value = null
+    }
+
+    const onDragStart = (event) => {
+      if (event?.button !== undefined && event.button !== 0) return
+      dragging.value = true
+      dragStartX = Number(event?.clientX) || 0
+      dragStartIndex = clampedStart.value
+      const rect = event?.currentTarget?.getBoundingClientRect?.()
+      dragScale = rect?.width > 0 ? VIEW_WIDTH / rect.width : 1
+      try {
+        event?.currentTarget?.setPointerCapture?.(event.pointerId)
+      } catch {
+        // 某些运行环境不支持指针捕获
+      }
+    }
+
+    const onDragMove = (event) => {
+      if (!dragging.value) return
+      const delta = ((Number(event?.clientX) || 0) - dragStartX) * dragScale
+      const steps = Math.round(delta / Math.max(1, step.value))
+      // 内容跟随鼠标：向右拖查看更早，向左拖查看更晚
+      startIndex.value = clampStartValue(dragStartIndex - steps)
+    }
+
+    const onDragEnd = (event) => {
+      if (!dragging.value) return
+      dragging.value = false
+      try {
+        event?.currentTarget?.releasePointerCapture?.(event.pointerId)
+      } catch {
+        // 忽略
+      }
+    }
 
     onMounted(() => {
       load()
@@ -294,6 +402,12 @@ export default {
       activeLabel,
       unit,
       series,
+      dragging,
+      canPanBack,
+      resetPan,
+      onDragStart,
+      onDragMove,
+      onDragEnd,
       summary,
       hasData,
       yTicks,
@@ -306,6 +420,7 @@ export default {
       showLabel,
       heatColor,
       tooltip,
+      modelTitle,
       formatTokenAmount,
     }
   },

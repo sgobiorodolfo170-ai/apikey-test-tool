@@ -979,11 +979,24 @@ describe('额度窗口（5 小时 / 7 天）', () => {
     ).toEqual({
       enabled: true,
       metric: 'credit',
+      windowMode: 'rolling',
+      limitMonth: 0,
       limit5h: 10,
       limitWeek: 50,
       creditsPerMillionTokens: 4,
       confirmStrikes: 0,
       confirmIntervalMinutes: 0,
+      confirmSpanMinutes: 0,
+      burstWindowMinutes: 0,
+      burstStrikes: 0,
+      reserveRatio: 0,
+      warmupMinutes: 0,
+      perModel: false,
+      group: '',
+      groups: [],
+      keyGroups: {},
+      modelLimits: {},
+      modelRates: {},
     })
     expect(relay.normalizeQuota({ enabled: true }).enabled).toBe(false)
     expect(relay.normalizeQuota({ enabled: true, limit5h: 5 }).metric).toBe('request')
@@ -1062,7 +1075,8 @@ describe('额度窗口（5 小时 / 7 天）', () => {
     const blocked = relay.quotaBlocked(provider)
     expect(blocked.locked).toBe(true)
     expect(blocked.window).toBe('5h')
-    expect(blocked.retryAfter).toBeGreaterThan(3000)
+    // 锁定时长按本地记账估算，至少 5 分钟；本地没有用量记录时也不会短于 5 分钟
+    expect(blocked.retryAfter).toBeGreaterThanOrEqual(300)
     relay.clearRuntime()
   })
 

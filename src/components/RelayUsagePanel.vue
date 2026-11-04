@@ -22,18 +22,39 @@
     <RelayTokenChart v-if="hasAnyUsage" />
 
     <div
-      v-if="logs.length === 0"
+      v-if="logs.length === 0 && keyRows.length === 0"
       class="flex-1 flex flex-col items-center justify-center text-center gap-1.5 px-4"
     >
       <div class="text-text-muted text-sm">还没有 token 统计</div>
       <div class="text-[14px] text-text-muted leading-relaxed">
-        启动中转站并产生调用后，这里会按 Key 与模型汇总 token 用量
+        启动中转站并产生调用后，这里会统计中转站内所有上游 Key 的调用情况
       </div>
     </div>
 
     <template v-else>
       <div class="flex-1 min-h-0 flex flex-col gap-1">
-        <div class="text-[14px] font-medium text-text-primary flex-shrink-0">按 Key 统计</div>
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 flex-shrink-0">
+          <span class="text-[14px] font-medium text-text-primary">按 Key 统计</span>
+          <div class="flex rounded-card border border-border overflow-hidden">
+            <button
+              v-for="item in WINDOWS"
+              :key="item.id"
+              type="button"
+              class="px-2 py-1 text-[13px] transition-colors whitespace-nowrap"
+              :class="
+                activeWindow === item.id
+                  ? 'bg-accent text-white'
+                  : 'text-text-secondary hover:bg-surface-hover'
+              "
+              @click="activeWindow = item.id"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+          <span class="text-[13px] font-normal text-text-muted"
+            >（中转站内全部上游 Key，含未调用）</span
+          >
+        </div>
         <div class="flex-1 min-h-0 overflow-auto rounded-card border border-border">
           <table class="w-full text-left text-[13px] text-text-primary border-collapse">
             <thead class="sticky top-0 z-10 bg-surface-alt text-text-secondary">
@@ -49,13 +70,13 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="keyRows.length === 0">
+              <tr v-if="displayRows.length === 0">
                 <td colspan="8" class="px-2 py-3 text-center text-text-muted">
-                  暂无带 Key 的调用（缓存命中不计 Key）
+                  暂无上游 Key（请先在中转站里添加提供商与 Key）
                 </td>
               </tr>
               <tr
-                v-for="row in keyRows"
+                v-for="row in displayRows"
                 :key="row.id"
                 class="border-t border-border hover:bg-surface-hover"
               >
@@ -80,55 +101,53 @@
           </table>
         </div>
       </div>
-
-      <div class="flex-1 min-h-0 flex flex-col gap-1">
-        <div class="text-[14px] font-medium text-text-primary flex-shrink-0">按模型统计</div>
-        <div class="flex-1 min-h-0 overflow-auto rounded-card border border-border">
-          <table class="w-full text-left text-[13px] text-text-primary border-collapse">
-            <thead class="sticky top-0 z-10 bg-surface-alt text-text-secondary">
-              <tr>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">模型</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">调用</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">成功</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">输入</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">输出</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">合计</th>
-                <th class="px-2 py-1.5 font-medium whitespace-nowrap">最近</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="row in modelRows"
-                :key="row.id"
-                class="border-t border-border hover:bg-surface-hover"
-              >
-                <td class="px-2 py-1.5 truncate max-w-[180px]" :title="row.model">
-                  {{ row.model }}
-                </td>
-                <td class="px-2 py-1.5 whitespace-nowrap">{{ row.calls }}</td>
-                <td class="px-2 py-1.5 whitespace-nowrap">{{ row.success }}</td>
-                <td class="px-2 py-1.5 whitespace-nowrap">{{ formatNumber(row.prompt) }}</td>
-                <td class="px-2 py-1.5 whitespace-nowrap">
-                  {{ formatNumber(row.completion) }}
-                </td>
-                <td class="px-2 py-1.5 whitespace-nowrap font-medium">
-                  {{ formatNumber(row.total) }}
-                </td>
-                <td class="px-2 py-1.5 whitespace-nowrap">{{ shortTime(row.lastAt) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
     </template>
   </div>
 </template>
 
 <script>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
 import RelayTokenChart from './RelayTokenChart.vue'
 import { formatTokenAmount } from '../utils/tokenChart.js'
+
+const WINDOWS = [
+  { id: 'hour', label: '时调用' },
+  { id: 'hours5', label: '5小时调用' },
+  { id: 'day', label: '日调用' },
+  { id: 'days7', label: '7日调用' },
+  { id: 'month', label: '月调用' },
+]
+
+function emptyWindowStat() {
+  return { calls: 0, success: 0, prompt: 0, completion: 0, total: 0, lastAt: null }
+}
+
+function emptyWindows() {
+  return {
+    hour: emptyWindowStat(),
+    hours5: emptyWindowStat(),
+    day: emptyWindowStat(),
+    days7: emptyWindowStat(),
+    month: emptyWindowStat(),
+  }
+}
+
+// 兼容上一版只记录调用次数的数字桶
+function normalizeWindowStat(value) {
+  if (typeof value === 'number') {
+    return { ...emptyWindowStat(), calls: Number(value) || 0 }
+  }
+  if (!value || typeof value !== 'object') return emptyWindowStat()
+  return {
+    calls: Number(value.calls) || 0,
+    success: Number(value.success) || 0,
+    prompt: Number(value.prompt) || 0,
+    completion: Number(value.completion) || 0,
+    total: Number(value.total) || 0,
+    lastAt: value.lastAt || null,
+  }
+}
 
 function emptyRow(id, extra = {}) {
   return {
@@ -139,7 +158,43 @@ function emptyRow(id, extra = {}) {
     completion: 0,
     total: 0,
     lastAt: null,
+    windows: emptyWindows(),
     ...extra,
+  }
+}
+
+// 没有主进程窗口统计时，用当前日志时间就近估算各窗口的完整统计
+function addLogToWindow(row, log) {
+  const date = new Date(log.at)
+  if (Number.isNaN(date.getTime())) return
+  row.windows ||= emptyWindows()
+  const now = new Date()
+  const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours())
+  const fiveHoursAgo = new Date(now.getTime() - 5 * 60 * 60 * 1000)
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const flags = {
+    hour: date >= hourStart,
+    hours5: date >= fiveHoursAgo,
+    day: date >= todayStart,
+    days7: date >= weekStart,
+    month: date >= monthStart,
+  }
+  const ok = !log.error && log.status >= 200 && log.status < 400
+
+  for (const [key, active] of Object.entries(flags)) {
+    if (!active) continue
+    const stat = normalizeWindowStat(row.windows[key])
+    stat.calls += 1
+    if (ok) stat.success += 1
+    if (log.usage) {
+      stat.prompt += Number(log.usage.prompt) || 0
+      stat.completion += Number(log.usage.completion) || 0
+      stat.total += Number(log.usage.total) || 0
+    }
+    if (!stat.lastAt || new Date(log.at) > new Date(stat.lastAt)) stat.lastAt = log.at
+    row.windows[key] = stat
   }
 }
 
@@ -152,7 +207,19 @@ function addLog(row, log) {
     row.total += Number(log.usage.total) || 0
   }
   if (!row.lastAt || new Date(log.at) > new Date(row.lastAt)) row.lastAt = log.at
+  addLogToWindow(row, log)
 }
+
+// 一个上游可以配多把 Key：apiKeys 为主，apiKey 兼容旧数据
+function providerKeysOf(provider) {
+  const list = Array.isArray(provider?.apiKeys) ? provider.apiKeys : []
+  const keys = [...list, provider?.apiKey]
+    .map((key) => (typeof key === 'string' ? key.trim() : ''))
+    .filter(Boolean)
+  return [...new Set(keys)]
+}
+
+const keyTailOf = (key) => (typeof key === 'string' ? key.slice(-6) : '')
 
 export default {
   name: 'RelayUsagePanel',
@@ -163,31 +230,75 @@ export default {
 
     const logs = computed(() => relayStore.logs)
 
-    // 只要历史日志或按日统计任一有数据，就展示图表区
-    const hasAnyUsage = computed(() => relayStore.tokenHistory.length > 0 || logs.value.length > 0)
+    // 只要历史统计或日志任一有数据，就展示图表区
+    const hasAnyUsage = computed(
+      () =>
+        relayStore.tokenHistory.length > 0 ||
+        relayStore.tokenHourly.length > 0 ||
+        logs.value.length > 0,
+    )
 
+    // 单独统计中转站内所有上游 Key 的调用情况：
+    // 1) 先列出配置里的全部 Key（未调用也显示 0）；
+    // 2) 再用主进程持久化的按 Key 统计补充调用量，不受日志 200 条上限影响。
     const keyRows = computed(() => {
       const map = new Map()
-      for (const log of logs.value) {
-        if (!log.keyTail) continue
-        const id = `${log.provider || '未知'}::${log.keyTail}`
-        const row =
-          map.get(id) || emptyRow(id, { provider: log.provider || '未知', keyTail: log.keyTail })
-        addLog(row, log)
+
+      for (const provider of relayStore.providers) {
+        const name = provider.name || provider.id || '未知'
+        for (const key of providerKeysOf(provider)) {
+          const tail = keyTailOf(key)
+          if (!tail) continue
+          const id = `${name}::${tail}`
+          if (map.has(id)) continue
+          map.set(id, emptyRow(id, { provider: name, keyTail: tail }))
+        }
+      }
+
+      for (const item of relayStore.keyUsage) {
+        const tail = item?.keyTail || ''
+        if (!tail) continue
+        const provider = item.provider || '未知'
+        const id = item.id || `${provider}::${tail}`
+        const row = map.get(id) || emptyRow(id, { provider, keyTail: tail })
+        row.provider = provider
+        row.keyTail = tail
+        row.calls = Number(item.calls) || 0
+        row.success = Number(item.success) || 0
+        row.prompt = Number(item.prompt) || 0
+        row.completion = Number(item.completion) || 0
+        row.total = Number(item.total) || 0
+        row.lastAt = item.lastAt || row.lastAt
+        const windows = {}
+        for (const windowDef of WINDOWS) {
+          windows[windowDef.id] = normalizeWindowStat(item.windows?.[windowDef.id])
+        }
+        row.windows = windows
         map.set(id, row)
       }
-      return [...map.values()].sort((a, b) => b.total - a.total)
+
+      // 兼容旧版本主进程（还没返回 keys）：退回用内存日志估算
+      if (relayStore.keyUsage.length === 0) {
+        for (const log of logs.value) {
+          if (!log.keyTail) continue
+          const provider = log.provider || '未知'
+          const id = `${provider}::${log.keyTail}`
+          const row = map.get(id) || emptyRow(id, { provider, keyTail: log.keyTail })
+          addLog(row, log)
+          map.set(id, row)
+        }
+      }
+
+      return [...map.values()].sort((a, b) => b.total - a.total || b.calls - a.calls)
     })
 
-    const modelRows = computed(() => {
-      const map = new Map()
-      for (const log of logs.value) {
-        const id = log.model || '未知'
-        const row = map.get(id) || emptyRow(id, { model: id })
-        addLog(row, log)
-        map.set(id, row)
-      }
-      return [...map.values()].sort((a, b) => b.total - a.total)
+    // 标题后的选项卡：切换后列表只展示对应时间窗口的统计
+    const activeWindow = ref('hour')
+    const displayRows = computed(() => {
+      const windowKey = activeWindow.value
+      return keyRows.value
+        .map((row) => ({ ...row, ...normalizeWindowStat(row.windows?.[windowKey]) }))
+        .sort((a, b) => b.total - a.total || b.calls - a.calls)
     })
 
     const summary = computed(() => {
@@ -304,8 +415,10 @@ export default {
       relayStore,
       logs,
       hasAnyUsage,
+      WINDOWS,
+      activeWindow,
       keyRows,
-      modelRows,
+      displayRows,
       summary,
       cachedSummary,
       cacheStats,

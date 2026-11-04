@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: () => ipcRenderer.invoke('relay-status'),
     update: (config) => ipcRenderer.invoke('relay-update', config),
     fetchModels: (payload) => ipcRenderer.invoke('relay-models', payload),
+    testKey: (payload) => ipcRenderer.invoke('relay-test-key', payload),
     logs: () => ipcRenderer.invoke('relay-logs'),
     clearLogs: () => ipcRenderer.invoke('relay-clear-logs'),
     stats: () => ipcRenderer.invoke('relay-stats'),
