@@ -419,6 +419,94 @@ function killTree(child) {
   }
 }
 
+function readProcessTable() {
+  if (process.platform === 'win32') {
+    const result = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress',
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 10000 },
+    )
+    if (result.status !== 0) return null
+    const raw = JSON.parse(result.stdout || '[]')
+    return (Array.isArray(raw) ? raw : [raw]).map((entry) => ({
+      pid: Number(entry.ProcessId),
+      ppid: Number(entry.ParentProcessId),
+    }))
+  }
+
+  const result = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' })
+  if (result.status !== 0) return null
+  return result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number)
+      return { pid, ppid }
+    })
+}
+
+function collectProcessTree(rootPid) {
+  const rows = readProcessTable()
+  if (!rows) return null
+  const byParent = new Map()
+  for (const row of rows) {
+    if (!Number.isInteger(row.pid) || !Number.isInteger(row.ppid)) continue
+    const children = byParent.get(row.ppid) || []
+    children.push(row.pid)
+    byParent.set(row.ppid, children)
+  }
+  const pids = new Set([rootPid])
+  const queue = [rootPid]
+  while (queue.length > 0) {
+    for (const pid of byParent.get(queue.shift()) || []) {
+      if (pids.has(pid)) continue
+      pids.add(pid)
+      queue.push(pid)
+    }
+  }
+  return pids
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+async function waitForProcessTreeExit(pids, timeout = 10000) {
+  const deadline = Date.now() + timeout
+  let remaining = [...pids]
+  while (Date.now() < deadline) {
+    remaining = remaining.filter(isProcessAlive)
+    if (remaining.length === 0) return []
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  return remaining.filter(isProcessAlive)
+}
+
+function closeAppWindow(pid) {
+  if (process.platform !== 'win32') return false
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction Stop).CloseMainWindow()`,
+    ],
+    { encoding: 'utf8', windowsHide: true, timeout: 10000 },
+  )
+  return result.status === 0
+}
+
 async function checkRender() {
   const exe = findPackagedExe()
   if (!exe) {
@@ -505,7 +593,6 @@ async function checkRender() {
       returnByValue: true,
     })
     const dom = JSON.parse(result.result.value)
-    ws.close()
 
     if (dom.htmlLength < 500) {
       fail(`页面渲染为空（#app innerHTML 长度 ${dom.htmlLength}），即用户看到的白屏`)
@@ -531,6 +618,74 @@ async function checkRender() {
       .map((event) => event.params.entry.text)
     if (errors.length > 0) fail(`渲染进程存在未捕获异常：${errors.slice(0, 3).join(' | ')}`)
     if (logErrors.length > 0) fail(`渲染进程控制台存在错误：${logErrors.slice(0, 3).join(' | ')}`)
+
+    const baselinePids = collectProcessTree(child.pid)
+    if (!baselinePids) fail('无法读取系统进程表，退生子进程验证未完成')
+
+    console.log('[verify] 发送退生子进程指令')
+    try {
+      ws.send(
+        JSON.stringify({
+          id: ++seq,
+          method: 'Runtime.evaluate',
+          params: {
+            expression: `setTimeout(() => {
+              window.electronAPI.runCode({
+                language: 'js',
+                code: 'function solve(input) { const until = Date.now() + 10000; while (Date.now() < until) {} return input }',
+                tests: [{ input: 1, expected: 1 }]
+              }).catch(() => {});
+            }, 0); 'sandbox-started'`,
+            awaitPromise: false,
+          },
+        }),
+      )
+    } catch (error) {
+      fail(`无法发送退生子进程指令：${error.message}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+
+    // 必须在父进程退出前记录 PID，否则无法发现退出后遗留的孤立子进程。
+    const trackedPids = collectProcessTree(child.pid)
+    const spawnedPids = trackedPids ? [...trackedPids].filter((pid) => !baselinePids?.has(pid)) : []
+    console.log(
+      `[verify] 退出前进程树：${trackedPids ? [...trackedPids].join(', ') : '不可用'}；新增子进程：${spawnedPids.join(', ') || '无'}`,
+    )
+    if (!trackedPids) {
+      fail('无法读取系统进程表，退生子进程回收验证未完成')
+    } else if (spawnedPids.length === 0) {
+      fail('未能确认本地沙箱子进程已启动，回收验证未完成')
+    }
+
+    const closeRequested = closeAppWindow(child.pid)
+    if (!closeRequested && process.platform !== 'win32') {
+      try {
+        ws.send(JSON.stringify({ id: ++seq, method: 'Page.close' }))
+      } catch {
+        // 窗口关闭后 CDP 连接可能先于响应断开
+      }
+    }
+    ws.close()
+    console.log(`[verify] 已${closeRequested ? '发送窗口关闭消息' : '关闭渲染页'}，等待进程退出`)
+
+    const exitDeadline = Date.now() + 10000
+    while (child.exitCode === null && child.signalCode === null && Date.now() < exitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    const exited = child.exitCode !== null || child.signalCode !== null
+    if (!exited) {
+      fail('关闭窗口后主进程仍在运行（没有进入应用退出流程）')
+    } else {
+      pass('关闭窗口后主进程已退出')
+      if (trackedPids) {
+        const remaining = await waitForProcessTreeExit(trackedPids)
+        if (remaining.length > 0) {
+          fail(`关闭窗口后仍有进程残留：${remaining.join(', ')}`)
+        } else {
+          pass(`关闭窗口后进程树完全回收（共 ${trackedPids.size} 个进程）`)
+        }
+      }
+    }
   } catch (error) {
     fail(`启动已打包应用失败：${error.message}`)
     const tail = logs.trim().split('\n').slice(-10).join('\n')

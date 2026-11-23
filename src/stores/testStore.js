@@ -12,6 +12,11 @@ import { useToastStore } from './toastStore.js'
 // 连接测试只抽样测速：中转站常有 200+ 模型，全量会等待很久并消耗额度
 const MAX_CONNECTION_TEST_MODELS = 20
 
+function matchesTestConfig(testedConfig, config) {
+  if (!testedConfig) return false
+  return ['baseUrl', 'apiKey', 'apiMode'].every((key) => testedConfig[key] === config[key])
+}
+
 export const useTestStore = defineStore('test', {
   state: () => ({
     isTesting: false,
@@ -39,6 +44,9 @@ export const useTestStore = defineStore('test', {
     },
     setCurrentConfig(config) {
       this.currentConfig = { ...config }
+    },
+    clearCurrentConfig() {
+      this.currentConfig = null
     },
     setCurrentResult(result) {
       this.currentResult = result
@@ -121,6 +129,11 @@ export const useTestStore = defineStore('test', {
             probeState: probe.state,
             probeEvidence: probe.evidence,
             models: [],
+            config: {
+              baseUrl: config.baseUrl,
+              apiKey: config.apiKey,
+              apiMode: config.apiMode,
+            },
           })
           return { success: false }
         }
@@ -172,6 +185,11 @@ export const useTestStore = defineStore('test', {
           connectTime: 0,
           error: error.message || '测试过程中发生错误',
           models: [],
+          config: {
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            apiMode: config.apiMode,
+          },
         }
         this.setCurrentResult(errorResult)
 
@@ -257,6 +275,11 @@ export const useTestStore = defineStore('test', {
           testedModel: model,
           models: [],
           error: error.message || '测试过程中发生错误',
+          config: {
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            apiMode: config.apiMode,
+          },
         })
 
         try {
@@ -336,6 +359,11 @@ export const useTestStore = defineStore('test', {
           connectTime: 0,
           models: [],
           error: error.message || '测试过程中发生错误',
+          config: {
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            apiMode: config.apiMode,
+          },
         })
         return { success: false, error: error.message }
       } finally {
@@ -346,14 +374,17 @@ export const useTestStore = defineStore('test', {
       const toastStore = useToastStore()
       const historyStore = useHistoryStore()
 
-      // 没有测试结果时也允许保存当前配置（记录标记为未测试）
-      const result = this.currentResult || {
-        connected: false,
-        connectTime: 0,
-        models: [],
-        summary: { success: 0, failed: 0, avgLatency: 0 },
-        untested: true,
-      }
+      // 没有测试结果或配置已变化时，保存为未测试记录，避免复用旧结果
+      const result =
+        this.currentResult && matchesTestConfig(this.currentResult.config, config)
+          ? this.currentResult
+          : {
+              connected: false,
+              connectTime: 0,
+              models: [],
+              summary: { success: 0, failed: 0, avgLatency: 0 },
+              untested: true,
+            }
 
       try {
         if (config.provider) {

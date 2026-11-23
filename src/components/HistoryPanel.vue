@@ -149,7 +149,7 @@
                 ? 'border-l-success'
                 : 'border-l-danger'
           "
-          @click="record.result?.untested ? null : testStore.setCurrentResult(record.result)"
+          @click="previewRecord(record)"
         >
           <div class="flex justify-between items-start">
             <div class="flex-1">
@@ -410,6 +410,11 @@ export default {
       relayStore.loadLogs()
     })
 
+    const previewRecord = (record) => {
+      if (record.result?.untested) return
+      testStore.setCurrentResult({ ...record.result, config: record.config })
+    }
+
     // 历史记录加载配置后切到配置选项卡，确保用户立刻看到已填入的内容
     const loadConfigToPanel = async (record) => {
       await historyStore.loadConfig(record)
@@ -436,6 +441,7 @@ export default {
       requestCount,
       handleDelete,
       handleReload,
+      previewRecord,
       loadConfigToPanel,
       addToRelay,
       previousScore,

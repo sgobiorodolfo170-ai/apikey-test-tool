@@ -73,7 +73,10 @@ describe('HistoryPanel', () => {
     const items = wrapper.findAll('[class*="cursor-pointer"]')
     if (items.length > 0) {
       await items[0].trigger('click')
-      expect(testStore.currentResult).toEqual(mockStore.history[0].result)
+      expect(testStore.currentResult).toEqual({
+        ...mockStore.history[0].result,
+        config: mockStore.history[0].config,
+      })
     }
   })
 
@@ -107,6 +110,27 @@ describe('HistoryPanel', () => {
     expect(historyStore.configTabRequest).toBe(1)
     // 配置页已渲染，说明选项卡已切到「配置」
     expect(wrapper.text()).toContain('提供商名称')
+  })
+
+  it('loads the exact historical config instead of current provider settings', async () => {
+    mockStore.providers = {
+      'test-provider': {
+        baseUrl: 'https://new.example.com/v1',
+        apiMode: 'anthropic',
+      },
+    }
+    const record = {
+      config: {
+        provider: 'test-provider',
+        baseUrl: 'https://old.example.com/v1',
+        apiMode: 'openai',
+        apiKey: 'sk-old',
+      },
+    }
+
+    await historyStore.loadConfig(record)
+
+    expect(useTestStore().currentConfig).toEqual(record.config)
   })
 
   it('switches to the relay tab', async () => {

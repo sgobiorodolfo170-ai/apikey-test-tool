@@ -206,4 +206,56 @@ describe('testStore.saveResult', () => {
     )
     expect(historyStore.refresh).toHaveBeenCalled()
   })
+
+  it('saves a test result when it belongs to the current config', async () => {
+    const store = useTestStore()
+    const historyStore = useHistoryStore()
+    vi.spyOn(historyStore, 'refresh').mockImplementation(() => {})
+    saveTestRecord.mockResolvedValue(true)
+    store.currentResult = {
+      connected: true,
+      connectTime: 42,
+      models: [{ model: 'gpt-4', status: 'success', latency: 42 }],
+      summary: { success: 1, failed: 0, avgLatency: 42 },
+      config: { ...mockConfig },
+    }
+
+    await store.saveResult(mockConfig)
+
+    const savedRecord = saveTestRecord.mock.calls[0][0]
+    expect(savedRecord.result.connected).toBe(true)
+    expect(savedRecord.result.connectTime).toBe(42)
+    expect(savedRecord.result.untested).toBeUndefined()
+  })
+
+  it('saves a stale test result as an untested record for the changed config', async () => {
+    const store = useTestStore()
+    const historyStore = useHistoryStore()
+    vi.spyOn(historyStore, 'refresh').mockImplementation(() => {})
+    saveTestRecord.mockResolvedValue(true)
+    store.currentResult = {
+      connected: true,
+      connectTime: 42,
+      models: [{ model: 'gpt-4', status: 'success', latency: 42 }],
+      summary: { success: 1, failed: 0, avgLatency: 42 },
+      config: { ...mockConfig },
+    }
+    const changedConfig = {
+      ...mockConfig,
+      baseUrl: 'https://other.example.com/v1',
+    }
+
+    await store.saveResult(changedConfig)
+
+    const savedRecord = saveTestRecord.mock.calls[0][0]
+    expect(savedRecord.config).toEqual(changedConfig)
+    expect(savedRecord.result).toEqual(
+      expect.objectContaining({
+        connected: false,
+        connectTime: 0,
+        models: [],
+        untested: true,
+      }),
+    )
+  })
 })

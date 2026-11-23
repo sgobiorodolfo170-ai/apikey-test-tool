@@ -96,7 +96,8 @@ node scripts/generate-providers-cjs.cjs           # 生成主进程 providers �
 - [ ] 能看到“配置 / 历史 / 渠道 / 中转站 / 统计”等界面，不是白屏
 - [ ] F12 打开 DevTools，Console 没有红色报错
 - [ ] 顶部版本号与 `package.json` 一致
-- [ ] 关闭窗口后能从托盘恢复；托盘图标正常
+- [ ] macOS 关闭窗口后能从托盘恢复；托盘图标正常
+- [ ] Windows 关闭窗口即退出：主进程与所有子进程在 10 秒内回收，任务管理器无 `APIKeyTester.exe` / `electron.exe` 残留
 - [ ] 安装版与便携版各启动一次（两者都要验证）
 
 ### E. 发布
@@ -131,6 +132,7 @@ node scripts/generate-providers-cjs.cjs           # 生成主进程 providers �
 - `#app` 是否渲染出内容（`innerHTML` 长度 > 500）
 - `window.electronAPI` 是否存在
 - 渲染进程是否有未捕获异常 / 控制台错误
+- 启动本地沙箱子进程后关闭窗口，主进程及退出前记录的全部子进程是否完全回收
 
 这一条是“白屏”的最终防线，发版前必须跑一次。
 

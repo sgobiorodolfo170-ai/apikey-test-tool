@@ -165,6 +165,101 @@ describe('ConfigPanel', () => {
     expect(wrapper.vm.config.apiMode).toBe('gemini')
   })
 
+  it('should replace the previous provider key when selecting another provider', async () => {
+    vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
+    readProviderSettings.mockImplementation(async (name) => ({
+      baseUrl: `https://${name}.example.com`,
+      apiMode: 'openai',
+    }))
+    readHistory.mockResolvedValue([
+      { config: { provider: 'prov-a', apiKey: 'sk-a' } },
+      { config: { provider: 'prov-b', apiKey: 'sk-b' } },
+    ])
+
+    wrapper.vm.config.provider = 'prov-a'
+    wrapper.vm.onProviderChange()
+    await flushPromises()
+    expect(wrapper.vm.config.apiKey).toBe('sk-a')
+
+    wrapper.vm.selectProvider('prov-b')
+    await flushPromises()
+
+    expect(wrapper.vm.config.provider).toBe('prov-b')
+    expect(wrapper.vm.config.baseUrl).toBe('https://prov-b.example.com')
+    expect(wrapper.vm.config.apiKey).toBe('sk-b')
+  })
+
+  it('should clear the previous provider key when the next provider has no saved key', async () => {
+    vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
+    readProviderSettings.mockImplementation(async (name) => ({
+      baseUrl: `https://${name}.example.com`,
+      apiMode: 'openai',
+    }))
+    readHistory.mockResolvedValue([{ config: { provider: 'prov-a', apiKey: 'sk-a' } }])
+
+    wrapper.vm.config.provider = 'prov-a'
+    wrapper.vm.onProviderChange()
+    await flushPromises()
+    expect(wrapper.vm.config.apiKey).toBe('sk-a')
+
+    wrapper.vm.selectProvider('prov-b')
+    await flushPromises()
+
+    expect(wrapper.vm.config.apiKey).toBe('')
+  })
+
+  it('should preserve a manually entered key when reselecting the same provider', async () => {
+    vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
+    readProviderSettings.mockResolvedValue({
+      baseUrl: 'https://prov-a.example.com',
+      apiMode: 'openai',
+    })
+    readHistory.mockResolvedValue([{ config: { provider: 'prov-a', apiKey: 'sk-old' } }])
+
+    wrapper.vm.config.provider = 'prov-a'
+    wrapper.vm.onProviderChange()
+    await flushPromises()
+
+    const keyInput = wrapper.find('input[placeholder="sk-..."]')
+    await keyInput.setValue('sk-new')
+    wrapper.vm.selectProvider('prov-a')
+    await flushPromises()
+
+    expect(wrapper.vm.config.apiKey).toBe('sk-new')
+  })
+
+  it('should ignore a stale provider config response after switching providers', async () => {
+    vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
+    let resolveSlow
+    readProviderSettings.mockImplementation((name) => {
+      if (name === 'slow-provider') {
+        return new Promise((resolve) => {
+          resolveSlow = resolve
+        })
+      }
+      return Promise.resolve({
+        baseUrl: 'https://fast.example.com',
+        apiMode: 'openai',
+      })
+    })
+    readHistory.mockResolvedValue([])
+
+    wrapper.vm.selectProvider('slow-provider')
+    wrapper.vm.selectProvider('fast-provider')
+    await flushPromises()
+    expect(wrapper.vm.config.baseUrl).toBe('https://fast.example.com')
+
+    resolveSlow({
+      baseUrl: 'https://slow.example.com',
+      apiMode: 'anthropic',
+    })
+    await flushPromises()
+
+    expect(wrapper.vm.config.provider).toBe('fast-provider')
+    expect(wrapper.vm.config.baseUrl).toBe('https://fast.example.com')
+    expect(wrapper.vm.config.apiMode).toBe('openai')
+  })
+
   it('allows saving the config even without a test result', async () => {
     const saveSpy = vi.spyOn(testStore, 'saveResult').mockResolvedValue()
     testStore.hasResult = false
@@ -342,6 +437,34 @@ describe('ConfigPanel', () => {
     local.unmount()
   })
 
+  it('consumes a loaded config once across panel remounts', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useTestStore()
+    const history = useHistoryStore()
+    store.setCurrentConfig({
+      provider: '已加载提供商',
+      baseUrl: 'https://loaded.example.com/v1',
+      apiMode: 'openai',
+      apiKey: 'sk-loaded',
+    })
+    history.requestConfigTab()
+
+    const first = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+    expect(first.vm.config.baseUrl).toBe('https://loaded.example.com/v1')
+    expect(store.currentConfig).toBeNull()
+    first.unmount()
+
+    const second = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+    expect(second.vm.config.baseUrl).toBe('')
+    expect(second.vm.config.apiKey).toBe('')
+    second.unmount()
+  })
+
   it('does not overwrite the form with a stale config on a plain mount', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -363,83 +486,76 @@ describe('ConfigPanel', () => {
 })
 
 describe('ConfigPanel 内嵌测试结果', () => {
-  it('renders the result section below the form', async () => {
+  it('renders the result section below the action buttons', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(ConfigPanel, { global: { plugins: [pinia] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('暂无测试结果')
-    // 配置面板作为历史卡片的一个选项卡，不再自带卡片外壳
     expect(wrapper.findAll('.card')).toHaveLength(0)
+
+    const actions = wrapper.find('.form-actions')
+    const result = wrapper.find('.config-actions-results .result-section')
+    expect(result.exists()).toBe(true)
+    expect(actions.element.compareDocumentPosition(result.element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
   })
 
-  it('keeps the result box pinned to the card bottom and growing with it', () => {
+  it('keeps the model section before the actions in the original content order', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(ConfigPanel, {
       global: { plugins: [pinia], stubs: { teleport: true } },
     })
 
-    // 展示框弹性占据剩余高度：flex-grow 随卡片变高，flex-shrink-0 + min-h-64 保底不被压没
-    const section = wrapper.findAll('div').find((d) => d.classes().includes('flex-grow'))
-    expect(section).toBeDefined()
-    expect(section.classes()).toContain('flex-shrink-0')
-    expect(section.classes()).toContain('min-h-64')
+    const models = wrapper.find('.model-section')
+    const actions = wrapper.find('.config-actions-results')
+    expect(models.element.compareDocumentPosition(actions.element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  })
 
-    // 根节点不再整体滚动，滚动收敛到表单区内层容器，展示框因此始终贴住卡片底部
-    const root = wrapper.find('.flex-1.min-h-0.w-full')
+  it('lets the result content grow naturally inside the form scroll area', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    const root = wrapper.find('.config-panel')
+    const form = root.find('.overflow-y-auto')
+    const result = wrapper.find('.result-section')
     expect(root.classes()).not.toContain('overflow-y-auto')
-    expect(root.find('.overflow-y-auto').exists()).toBe(true)
+    expect(form.classes()).toContain('flex-1')
+    expect(result.classes()).not.toContain('flex-shrink-0')
+    expect(result.classes()).not.toContain('flex-grow')
   })
 
-  it('renders the content position slider in the toolbar', () => {
+  it('uses a responsive two-column layout for wide panels', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(ConfigPanel, {
       global: { plugins: [pinia], stubs: { teleport: true } },
     })
 
-    const slider = wrapper.find('input[type="range"]')
-    expect(slider.exists()).toBe(true)
-    expect(slider.attributes('aria-label')).toBe('配置内容区滚动定位滑块')
-    expect(slider.attributes('min')).toBe('0')
-    expect(slider.attributes('max')).toBe('100')
+    expect(wrapper.find('.config-content').exists()).toBe(true)
+    expect(wrapper.find('.config-fields').exists()).toBe(true)
+    expect(wrapper.find('.model-section').exists()).toBe(true)
+    expect(wrapper.find('.model-list').exists()).toBe(true)
+    expect(wrapper.find('.model-list').classes()).not.toContain('max-h-[180px]')
   })
 
-  it('slider drives the form scroll position by percent', () => {
+  it('does not render the removed content position slider', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(ConfigPanel, {
       global: { plugins: [pinia], stubs: { teleport: true } },
     })
 
-    const scrollEl = wrapper.find('.overflow-y-auto').element
-    // 模拟可滚动内容：scrollHeight > clientHeight
-    Object.defineProperty(scrollEl, 'scrollHeight', { value: 1000, configurable: true })
-    Object.defineProperty(scrollEl, 'clientHeight', { value: 500, configurable: true })
-
-    wrapper.vm.scrollPercent = 100
-    wrapper.vm.onScrollSliderInput()
-    expect(scrollEl.scrollTop).toBe(500)
-
-    wrapper.vm.scrollPercent = 0
-    wrapper.vm.onScrollSliderInput()
-    expect(scrollEl.scrollTop).toBe(0)
-
-    wrapper.vm.scrollPercent = 50
-    wrapper.vm.onScrollSliderInput()
-    expect(scrollEl.scrollTop).toBe(250)
-  })
-
-  it('does not duplicate the form scroll container when the slider is added', () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const wrapper = mount(ConfigPanel, {
-      global: { plugins: [pinia], stubs: { teleport: true } },
-    })
-
-    const root = wrapper.find('.flex-1.min-h-0.w-full')
-    expect(root.find('.overflow-y-auto').exists()).toBe(true)
+    expect(wrapper.find('input[type="range"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('内容定位')
+    expect(wrapper.text()).toContain('存为渠道')
   })
 })

@@ -56,6 +56,8 @@ function isPathSafe(targetPath) {
 let mainWindow = null
 let tray = null
 let quitting = false
+let cleanupPromise = null
+const activeSandboxChildren = new Set()
 // 页面加载失败后的自动重试次数（成功后归零）
 let loadRetries = 0
 
@@ -75,6 +77,7 @@ const eventListeners = {
   activate: null,
   willQuit: null,
   beforeQuit: null,
+  secondInstance: null,
 }
 
 // IPC 处理函数列表
@@ -83,6 +86,7 @@ const ipcHandlers = [
   'get-data-dir',
   'choose-data-dir',
   'window-set-size',
+  'window-set-collapsed',
   'read-file',
   'write-file',
   'exists-file',
@@ -97,6 +101,8 @@ const ipcHandlers = [
   'relay-update',
   'relay-models',
   'relay-test-key',
+  'relay-quota-unlock',
+  'relay-key-probe',
   'relay-logs',
   'relay-clear-logs',
   'relay-diagnostics',
@@ -678,6 +684,37 @@ try {
 process.stdout.write(JSON.stringify(out))
 `
 
+function stopProcessTree(child) {
+  return new Promise((resolve) => {
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+      resolve()
+      return
+    }
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      killer.once('error', () => {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          // 进程已退出
+        }
+        resolve()
+      })
+      killer.once('exit', () => resolve())
+      return
+    }
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // 进程已退出
+    }
+    resolve()
+  })
+}
+
 function runSandboxChild(dir) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(dir, 'harness.cjs')], {
@@ -685,6 +722,7 @@ function runSandboxChild(dir) {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    activeSandboxChildren.add(child)
 
     let stdout = ''
     let stderr = ''
@@ -693,11 +731,7 @@ function runSandboxChild(dir) {
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        // 进程已退出
-      }
+      void stopProcessTree(child)
       resolve({ ok: false, error: `执行超时（>${SANDBOX_TIMEOUT_MS}ms）` })
     }, SANDBOX_TIMEOUT_MS)
 
@@ -709,6 +743,7 @@ function runSandboxChild(dir) {
     })
 
     child.on('error', (error) => {
+      activeSandboxChildren.delete(child)
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -716,6 +751,7 @@ function runSandboxChild(dir) {
     })
 
     child.on('close', () => {
+      activeSandboxChildren.delete(child)
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -838,6 +874,11 @@ function showMainWindow() {
   releaseDevToolsOverlay()
 }
 
+function requestAppQuit() {
+  quitting = true
+  app.quit()
+}
+
 function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return
   const status = relay.getStatus()
@@ -870,10 +911,7 @@ function refreshTrayMenu() {
       { type: 'separator' },
       {
         label: '退出',
-        click: () => {
-          quitting = true
-          app.quit()
-        },
+        click: requestAppQuit,
       },
     ]),
   )
@@ -1089,16 +1127,18 @@ function createWindow() {
   )
 
   mainWindow.on('close', (event) => {
-    // 托盘常驻：关闭窗口只隐藏，中转服务与调用统计继续在后台跑
-    if (!quitting && appSettings.tray) {
+    if (quitting) return
+    // Windows/Linux 关闭窗口即退出；macOS 保留关闭到托盘的常规行为。
+    if (!quitting && process.platform === 'darwin' && appSettings.tray) {
       event.preventDefault()
       saveWindowState()
-      // 主窗口收进托盘时，独立的 DevTools 窗口也一起隐藏，避免只剩它浮在桌面上
       for (const win of BrowserWindow.getAllWindows()) {
         if (isDevToolsWindow(win)) win.hide()
       }
       mainWindow.hide()
+      return
     }
+    requestAppQuit()
   })
 
   // F12 切换独立 DevTools（打开时不会置顶遮挡主窗口）
@@ -1134,66 +1174,85 @@ function createWindow() {
 }
 
 function cleanupResources() {
-  console.log('正在清理资源...')
+  if (cleanupPromise) return cleanupPromise
+  quitting = true
+  cleanupPromise = (async () => {
+    console.log('正在清理资源...')
 
-  // 退出前同步落盘，保证最后一次统计/额度不丢
-  relay.persistNow({ sync: true })
-  relay.stop()
-  if (tray && !tray.isDestroyed()) {
-    tray.destroy()
-    tray = null
-  }
+    if (mainWindow && !mainWindow.isDestroyed()) saveWindowState()
 
-  if (mainWindow) {
-    if (!mainWindow.isDestroyed()) {
-      saveWindowState()
+    for (const controller of activeHttpRequests.values()) controller.abort()
+    activeHttpRequests.clear()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
       try {
         mainWindow.webContents.send('app-cleanup')
-      } catch (e) {
-        console.log('无法发送清理消息给渲染进程:', e.message)
+      } catch (error) {
+        console.log('无法发送清理消息给渲染进程:', error.message)
       }
-      mainWindow.destroy()
+    }
+
+    await Promise.all([...activeSandboxChildren].map(stopProcessTree))
+    activeSandboxChildren.clear()
+
+    try {
+      await relay.stop()
+    } catch (error) {
+      logError('Relay Cleanup', error.message, error.stack)
+    }
+    try {
+      await relay.persistNow({ sync: true })
+    } catch (error) {
+      logError('Relay Persist', error.message, error.stack)
+    }
+
+    if (tray && !tray.isDestroyed()) {
+      tray.destroy()
+      tray = null
+    }
+
+    const appEvents = [
+      ['windowAllClosed', 'window-all-closed'],
+      ['activate', 'activate'],
+      ['willQuit', 'will-quit'],
+      ['beforeQuit', 'before-quit'],
+      ['secondInstance', 'second-instance'],
+    ]
+    for (const [name, event] of appEvents) {
+      const listener = eventListeners[name]
+      if (!listener) continue
+      app.removeListener(event, listener)
+      eventListeners[name] = null
+    }
+
+    ipcHandlers.forEach((handler) => {
+      try {
+        ipcMain.removeHandler(handler)
+      } catch {
+        // 应用尚未完整注册时无需清理
+      }
+    })
+
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.destroy()
     }
     mainWindow = null
-  }
 
-  if (eventListeners.uncaughtException) {
-    process.off('uncaughtException', eventListeners.uncaughtException)
-    eventListeners.uncaughtException = null
-  }
-
-  if (eventListeners.unhandledRejection) {
-    process.off('unhandledRejection', eventListeners.unhandledRejection)
-    eventListeners.unhandledRejection = null
-  }
-
-  if (eventListeners.windowAllClosed) {
-    app.removeListener('window-all-closed', eventListeners.windowAllClosed)
-    eventListeners.windowAllClosed = null
-  }
-
-  if (eventListeners.activate) {
-    app.removeListener('activate', eventListeners.activate)
-    eventListeners.activate = null
-  }
-
-  if (eventListeners.beforeQuit) {
-    app.removeListener('before-quit', eventListeners.beforeQuit)
-    eventListeners.beforeQuit = null
-  }
-
-  if (eventListeners.willQuit) {
-    app.removeListener('will-quit', eventListeners.willQuit)
-    eventListeners.willQuit = null
-  }
-
-  ipcHandlers.forEach((handler) => {
-    if (ipcMain.removeHandler) {
-      ipcMain.removeHandler(handler)
+    if (eventListeners.uncaughtException) {
+      process.off('uncaughtException', eventListeners.uncaughtException)
+      eventListeners.uncaughtException = null
     }
+    if (eventListeners.unhandledRejection) {
+      process.off('unhandledRejection', eventListeners.unhandledRejection)
+      eventListeners.unhandledRejection = null
+    }
+
+    console.log('资源清理完成')
+  })().catch((error) => {
+    logError('Application Cleanup', error.message, error.stack)
   })
 
-  console.log('资源清理完成')
+  return cleanupPromise
 }
 
 function registerAppLifecycle() {
@@ -1225,10 +1284,8 @@ function registerAppLifecycle() {
   })
 
   eventListeners.windowAllClosed = () => {
-    if (quitting || !appSettings.tray) {
-      if (process.platform !== 'darwin') {
-        app.quit()
-      }
+    if (process.platform !== 'darwin' || quitting || !appSettings.tray) {
+      requestAppQuit()
     }
   }
   app.on('window-all-closed', eventListeners.windowAllClosed)
@@ -1239,14 +1296,22 @@ function registerAppLifecycle() {
   }
   app.on('activate', eventListeners.activate)
 
-  eventListeners.beforeQuit = (_event) => {
-    console.log('应用程序准备退出 (before-quit)')
+  eventListeners.beforeQuit = (event) => {
+    if (cleanupPromise) {
+      event.preventDefault()
+      return
+    }
+    const handler = eventListeners.beforeQuit
+    event.preventDefault()
+    void cleanupResources().finally(() => {
+      app.removeListener('before-quit', handler)
+      app.quit()
+    })
   }
   app.on('before-quit', eventListeners.beforeQuit)
 
   eventListeners.willQuit = () => {
-    console.log('应用程序即将退出 (will-quit)')
-    cleanupResources()
+    void cleanupResources()
   }
   app.on('will-quit', eventListeners.willQuit)
 }
@@ -1258,7 +1323,7 @@ const ISOLATED_RUN = Boolean(process.env.APKEY_USER_DATA_DIR)
 if (!ISOLATED_RUN && !app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  eventListeners.secondInstance = () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       if (app.isReady()) createWindow()
       return
@@ -1266,7 +1331,8 @@ if (!ISOLATED_RUN && !app.requestSingleInstanceLock()) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
-  })
+  }
+  app.on('second-instance', eventListeners.secondInstance)
 
   registerAppLifecycle()
 }

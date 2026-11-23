@@ -1,279 +1,279 @@
 <template>
-  <div class="flex-1 min-h-0 w-full flex flex-col">
-    <!-- 表单区：卡片空间不足时自身内部滚动，不把测试结果区顶出卡片 -->
-    <div ref="formScrollRef" class="min-h-0 flex-shrink overflow-y-auto" @scroll="onFormScroll">
-      <div class="flex items-center gap-3 border-b border-border pb-2 flex-shrink-0">
-        <label
-          class="flex items-center gap-2 text-xs text-text-secondary flex-1 min-w-0"
-          title="拖动滑块定位配置内容区：0% = 顶部，100% = 底部"
-        >
-          <span class="whitespace-nowrap">内容定位</span>
-          <input
-            ref="scrollSliderInput"
-            v-model.number="scrollPercent"
-            type="range"
-            min="0"
-            max="100"
-            step="1"
-            class="scroll-slider flex-1 min-w-0"
-            aria-label="配置内容区滚动定位滑块"
-            @input="onScrollSliderInput"
-            @change="onScrollSliderInput"
-          />
-          <span class="whitespace-nowrap tabular-nums w-9 text-right text-text-muted">
-            {{ Math.round(scrollPercent) }}%
-          </span>
-        </label>
-        <button
-          type="button"
-          class="btn-ghost text-xs px-2 py-1 flex-shrink-0"
-          :disabled="!isValid"
-          title="把当前 Base URL / API Key 保存为可切换的渠道"
-          @click="saveAsChannel"
-        >
-          存为渠道
-        </button>
-      </div>
-
-      <div class="grid grid-cols-2 gap-4 mt-4">
-        <div>
-          <label class="label">提供商名称</label>
-          <div ref="providerFieldRef" class="relative">
-            <input
-              ref="providerInput"
-              v-model="config.provider"
-              type="text"
-              placeholder="选择或输入提供商"
-              class="input pr-8"
-              @change="onProviderChange"
-              @contextmenu.prevent="showContextMenu($event, 'provider')"
-            />
-            <button
-              type="button"
-              class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-text-secondary hover:text-text-primary"
-              title="展开提供商列表"
-              @mousedown.stop.prevent="toggleProviderDropdown"
-            >
-              ▾
-            </button>
-            <Teleport to="body">
-              <div
-                v-if="providerDropdown.visible"
-                class="fixed z-50 bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 max-h-64 overflow-y-auto"
-                :style="{
-                  left: providerDropdown.x + 'px',
-                  top: providerDropdown.y + 'px',
-                  width: providerDropdown.width + 'px',
-                }"
-              >
-                <div v-if="savedProviders.length === 0" class="px-3 py-2 text-text-muted text-sm">
-                  暂无已保存的提供商
-                </div>
+  <div class="config-panel flex-1 min-h-0 w-full flex flex-col">
+    <!-- 表单区：宽面板双栏展示，窄面板或矮卡片中自身滚动 -->
+    <div class="min-h-0 flex-1 overflow-y-auto" @scroll="closeDropdowns">
+      <div class="config-content">
+        <div class="config-fields">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="label">提供商名称</label>
+              <div ref="providerFieldRef" class="relative">
+                <input
+                  ref="providerInput"
+                  v-model="config.provider"
+                  type="text"
+                  placeholder="选择或输入提供商"
+                  class="input pr-8"
+                  @change="onProviderChange"
+                  @contextmenu.prevent="showContextMenu($event, 'provider')"
+                />
                 <button
-                  v-for="p in savedProviders"
-                  :key="p"
                   type="button"
-                  class="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-hover truncate"
-                  @mousedown.stop.prevent
-                  @click="selectProvider(p)"
+                  class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-text-secondary hover:text-text-primary"
+                  title="展开提供商列表"
+                  @mousedown.stop.prevent="toggleProviderDropdown"
                 >
-                  {{ p }}
+                  ▾
+                </button>
+                <Teleport to="body">
+                  <div
+                    v-if="providerDropdown.visible"
+                    class="fixed z-50 bg-surface-alt border border-border-light rounded-card shadow-elevated py-1 max-h-64 overflow-y-auto"
+                    :style="{
+                      left: providerDropdown.x + 'px',
+                      top: providerDropdown.y + 'px',
+                      width: providerDropdown.width + 'px',
+                    }"
+                  >
+                    <div
+                      v-if="savedProviders.length === 0"
+                      class="px-3 py-2 text-text-muted text-sm"
+                    >
+                      暂无已保存的提供商
+                    </div>
+                    <button
+                      v-for="p in savedProviders"
+                      :key="p"
+                      type="button"
+                      class="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-hover truncate"
+                      @mousedown.stop.prevent
+                      @click="selectProvider(p)"
+                    >
+                      {{ p }}
+                    </button>
+                  </div>
+                </Teleport>
+              </div>
+            </div>
+
+            <div>
+              <label class="label">API 模式</label>
+              <select v-model="config.apiMode" class="select">
+                <option v-for="mode in apiModes" :key="mode.value" :value="mode.value">
+                  {{ mode.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="label">Base URL</label>
+            <div class="flex gap-2">
+              <input
+                ref="baseUrlInput"
+                v-model="config.baseUrl"
+                type="text"
+                placeholder="https://api.openai.com/v1"
+                class="input flex-1 min-w-0"
+                @contextmenu.prevent="showContextMenu($event, 'baseUrl')"
+              />
+              <button
+                class="btn-ghost px-3 text-sm"
+                title="清空Base URL"
+                @click="config.baseUrl = ''"
+              >
+                清空
+              </button>
+              <button
+                class="btn-ghost px-3 text-sm"
+                title="复制Base URL"
+                @click="copyText(config.baseUrl)"
+              >
+                复制
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="label">API Key</label>
+            <div class="flex gap-2">
+              <div class="relative flex-1 min-w-0">
+                <input
+                  ref="apiKeyInput"
+                  v-model="config.apiKey"
+                  :type="showApiKey ? 'text' : 'password'"
+                  placeholder="sk-..."
+                  autocomplete="off"
+                  spellcheck="false"
+                  class="input w-full pr-14"
+                  @contextmenu.prevent="showContextMenu($event, 'apiKey')"
+                  @input="onApiKeyInput"
+                />
+                <button
+                  type="button"
+                  class="absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+                  :title="showApiKey ? '隐藏API Key' : '显示API Key'"
+                  @click="showApiKey = !showApiKey"
+                >
+                  {{ showApiKey ? '隐藏' : '显示' }}
                 </button>
               </div>
-            </Teleport>
+              <button
+                class="btn-ghost px-3 text-sm"
+                title="清空API Key"
+                @click="config.apiKey = ''"
+              >
+                清空
+              </button>
+              <button
+                class="btn-ghost px-3 text-sm"
+                title="复制API Key"
+                @click="copyText(config.apiKey)"
+              >
+                复制
+              </button>
+            </div>
+            <p
+              v-if="needsApiKey && config.apiKey.trim() === ''"
+              class="mt-1 text-xs text-text-muted"
+            >
+              Key 留空时按免鉴权请求发送（本地中转 / 无鉴权网关场景）
+            </p>
           </div>
         </div>
 
-        <div>
-          <label class="label">API 模式</label>
-          <select v-model="config.apiMode" class="select">
-            <option v-for="mode in apiModes" :key="mode.value" :value="mode.value">
-              {{ mode.label }}
-            </option>
-          </select>
-        </div>
-      </div>
-
-      <div>
-        <label class="label">Base URL</label>
-        <div class="flex gap-2">
-          <input
-            ref="baseUrlInput"
-            v-model="config.baseUrl"
-            type="text"
-            placeholder="https://api.openai.com/v1"
-            class="input flex-1"
-            @contextmenu.prevent="showContextMenu($event, 'baseUrl')"
-          />
-          <button class="btn-ghost px-3 text-sm" title="清空Base URL" @click="config.baseUrl = ''">
-            清空
-          </button>
-          <button
-            class="btn-ghost px-3 text-sm"
-            title="复制Base URL"
-            @click="copyText(config.baseUrl)"
-          >
-            复制
-          </button>
-        </div>
-      </div>
-
-      <div>
-        <label class="label">API Key</label>
-        <div class="flex gap-2">
-          <div class="relative flex-1">
-            <input
-              ref="apiKeyInput"
-              v-model="config.apiKey"
-              :type="showApiKey ? 'text' : 'password'"
-              placeholder="sk-..."
-              autocomplete="off"
-              spellcheck="false"
-              class="input w-full pr-14"
-              @contextmenu.prevent="showContextMenu($event, 'apiKey')"
-            />
+        <section class="model-section min-w-0" aria-label="模型选择">
+          <div class="flex items-center justify-between gap-2">
+            <label class="label mb-0">可用模型 (自动获取)</label>
             <button
-              type="button"
-              class="absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
-              :title="showApiKey ? '隐藏API Key' : '显示API Key'"
-              @click="showApiKey = !showApiKey"
+              class="btn-ghost px-2 py-1 text-xs flex-shrink-0"
+              :disabled="testStore.isFetchingModels || !isValid"
+              title="重新获取模型列表"
+              @click="fetchModels"
             >
-              {{ showApiKey ? '隐藏' : '显示' }}
+              重新获取
             </button>
           </div>
-          <button class="btn-ghost px-3 text-sm" title="清空API Key" @click="config.apiKey = ''">
-            清空
-          </button>
-          <button
-            class="btn-ghost px-3 text-sm"
-            title="复制API Key"
-            @click="copyText(config.apiKey)"
-          >
-            复制
-          </button>
-        </div>
-        <p v-if="needsApiKey && config.apiKey.trim() === ''" class="mt-1 text-xs text-text-muted">
-          Key 留空时按免鉴权请求发送（本地中转 / 无鉴权网关场景）
-        </p>
-      </div>
-
-      <div>
-        <div class="flex items-center justify-between">
-          <label class="label">可用模型 (自动获取)</label>
-          <button
-            class="btn-ghost px-2 py-1 text-xs"
-            :disabled="testStore.isFetchingModels || !isValid"
-            title="重新获取模型列表"
-            @click="fetchModels"
-          >
-            重新获取
-          </button>
-        </div>
-        <div class="flex items-center gap-2 mb-2">
-          <input
-            v-model="modelFilter"
-            type="text"
-            placeholder="搜索模型名..."
-            class="input flex-1 text-xs py-1"
-          />
-          <button
-            class="btn-ghost text-xs px-2 py-1"
-            :disabled="filteredModels.length === 0"
-            title="选中当前筛选结果"
-            @click="selectAllVisible"
-          >
-            全选
-          </button>
-          <button
-            class="btn-ghost text-xs px-2 py-1"
-            :disabled="selectedModels.length === 0"
-            title="清空已选"
-            @click="clearSelection"
-          >
-            清空
-          </button>
-        </div>
-
-        <div
-          class="bg-surface-alt border border-border-light rounded-input px-3 py-2 min-h-[180px] max-h-[180px] overflow-y-auto"
-        >
-          <div v-if="testStore.isFetchingModels" class="text-text-muted text-sm">
-            正在获取模型列表...
-          </div>
-          <div v-else-if="testStore.modelsError" class="text-danger text-sm break-all">
-            {{ testStore.modelsError }}
-          </div>
-          <div v-else-if="testStore.availableModels.length === 0" class="text-text-muted text-sm">
-            输入API Key后自动获取
-          </div>
-          <div v-else-if="filteredModels.length === 0" class="text-text-muted text-sm">
-            没有匹配「{{ modelFilter }}」的模型
-          </div>
-          <div v-else class="flex flex-wrap gap-2">
-            <span
-              v-for="model in filteredModels"
-              :key="model"
-              class="bg-blue-600 text-white text-xs rounded flex items-stretch overflow-hidden"
-              :title="model"
+          <div class="model-toolbar">
+            <input
+              v-model="modelFilter"
+              type="text"
+              placeholder="搜索模型名..."
+              class="input min-w-0 flex-1 text-xs py-1"
+            />
+            <button
+              class="btn-ghost text-xs px-2 py-1 flex-shrink-0"
+              :disabled="filteredModels.length === 0"
+              title="选中当前筛选结果"
+              @click="selectAllVisible"
             >
+              全选
+            </button>
+            <button
+              class="btn-ghost text-xs px-2 py-1 flex-shrink-0"
+              :disabled="selectedModels.length === 0"
+              title="清空已选"
+              @click="clearSelection"
+            >
+              清空
+            </button>
+          </div>
+
+          <div class="model-list bg-surface-alt border border-border-light rounded-input p-2">
+            <div v-if="testStore.isFetchingModels" class="text-text-muted text-sm">
+              正在获取模型列表...
+            </div>
+            <div v-else-if="testStore.modelsError" class="text-danger text-sm break-all">
+              {{ testStore.modelsError }}
+            </div>
+            <div v-else-if="testStore.availableModels.length === 0" class="text-text-muted text-sm">
+              输入API Key后自动获取
+            </div>
+            <div v-else-if="filteredModels.length === 0" class="text-text-muted text-sm">
+              没有匹配「{{ modelFilter }}」的模型
+            </div>
+            <div v-else class="flex flex-wrap gap-1.5">
               <span
-                class="w-5 flex items-center justify-center border-r border-white/40 cursor-pointer hover:bg-blue-800 select-none"
-                :title="isSelected(model) ? '取消选择' : '选择该模型'"
-                @click.stop="toggleModelSelection(model)"
+                v-for="model in filteredModels"
+                :key="model"
+                class="bg-blue-600 text-white text-xs rounded flex items-stretch overflow-hidden"
+                :title="model"
               >
-                {{ isSelected(model) ? '✓' : '' }}
+                <span
+                  class="w-5 flex items-center justify-center border-r border-white/40 cursor-pointer hover:bg-blue-800 select-none"
+                  :title="isSelected(model) ? '取消选择' : '选择该模型'"
+                  @click.stop="toggleModelSelection(model)"
+                >
+                  {{ isSelected(model) ? '✓' : '' }}
+                </span>
+                <span class="px-2 py-1" :title="model">
+                  {{ model.length > 20 ? model.substring(0, 20) + '...' : model }}
+                </span>
+                <span
+                  class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
+                  title="复制模型名称"
+                  @click.stop="copyModel(model)"
+                >
+                  📋
+                </span>
+                <span
+                  class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
+                  title="仅测试该模型的连通性"
+                  @click.stop="onTestSingleModel(model)"
+                >
+                  ⚡
+                </span>
               </span>
-              <span class="px-2 py-1" :title="model">
-                {{ model.length > 20 ? model.substring(0, 20) + '...' : model }}
-              </span>
-              <span
-                class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
-                title="复制模型名称"
-                @click.stop="copyModel(model)"
-              >
-                📋
-              </span>
-              <span
-                class="px-1.5 py-1 border-l border-white/40 cursor-pointer hover:bg-blue-800"
-                title="仅测试该模型的连通性"
-                @click.stop="onTestSingleModel(model)"
-              >
-                ⚡
-              </span>
+            </div>
+          </div>
+
+          <div v-if="selectedModels.length > 0" class="model-selection">
+            <span class="text-xs text-text-secondary">
+              已选 {{ selectedModels.length }} 个模型
+              <span v-if="modelFilter.trim()">（筛选出 {{ filteredModels.length }} 个）</span>
             </span>
+            <button
+              class="btn-primary text-xs px-3 py-1 flex-shrink-0"
+              :disabled="testStore.isTesting"
+              @click="onTestSelected"
+            >
+              测试选中
+            </button>
+          </div>
+        </section>
+
+        <div class="config-actions-results min-w-0">
+          <div class="form-actions">
+            <button
+              :disabled="testStore.isTesting || !isValid"
+              class="btn-primary flex-1 px-4 py-2.5"
+              @click="onTest"
+            >
+              {{ testStore.isTesting ? '测试中...' : '开始测试' }}
+            </button>
+            <button
+              :disabled="testStore.isTesting"
+              class="btn-success flex-1 px-4 py-2.5"
+              @click="onSave"
+            >
+              保存结果
+            </button>
+            <button
+              type="button"
+              class="btn-ghost px-3 py-2.5 text-sm flex-shrink-0"
+              :disabled="!isValid"
+              title="把当前 Base URL / API Key 保存为可切换的渠道"
+              @click="saveAsChannel"
+            >
+              存为渠道
+            </button>
+          </div>
+
+          <div class="result-section pt-3 border-t border-border flex flex-col">
+            <div class="text-sm font-semibold text-text-primary mb-2 flex-shrink-0">测试结果</div>
+            <ResultPanel />
           </div>
         </div>
-
-        <div v-if="selectedModels.length > 0" class="flex items-center justify-between mt-2">
-          <span class="text-xs text-text-secondary">
-            已选 {{ selectedModels.length }} 个模型
-            <span v-if="modelFilter.trim()">（筛选出 {{ filteredModels.length }} 个）</span>
-          </span>
-          <button
-            class="btn-primary text-xs px-3 py-1"
-            :disabled="testStore.isTesting"
-            @click="onTestSelected"
-          >
-            测试选中
-          </button>
-        </div>
-      </div>
-
-      <div class="flex gap-3 pt-2">
-        <button
-          :disabled="testStore.isTesting || !isValid"
-          class="btn-primary flex-1 py-3 px-4"
-          @click="onTest"
-        >
-          {{ testStore.isTesting ? '测试中...' : '开始测试' }}
-        </button>
-        <button
-          :disabled="testStore.isTesting"
-          class="btn-success flex-1 py-3 px-4"
-          @click="onSave"
-        >
-          保存结果
-        </button>
       </div>
     </div>
 
@@ -298,13 +298,6 @@
         </button>
       </div>
     </Teleport>
-
-    <!-- 测试结果展示框：flex-grow 占据卡片剩余高度，下边界始终与卡片下边界保持固定边距
-         （该边距由 HistoryPanel 的 p-6 提供），卡片变高时展示框随之变高；min-h-64 保底 -->
-    <div class="mt-4 pt-3 border-t border-border flex flex-col flex-grow flex-shrink-0 min-h-64">
-      <div class="text-sm font-semibold text-text-primary mb-2 flex-shrink-0">测试结果</div>
-      <ResultPanel />
-    </div>
   </div>
 </template>
 
@@ -333,60 +326,6 @@ export default {
       apiMode: 'openai',
       apiKey: '',
     })
-
-    // 内容定位滑块：纯滚动定位，不折叠内容
-    // 0% = 滚动区顶部，100% = 滚动区底部；内容始终完整渲染
-    const formScrollRef = ref(null)
-    const scrollSliderInput = ref(null)
-    const scrollPercent = ref(0)
-    // 滑块正在驱动滚动时，忽略 onFormScroll 的反向回写，避免抖动
-    let sliderDrivingScroll = false
-    let scrollSyncObserver = null
-
-    const setFormScrollByPercent = (percent) => {
-      const el = formScrollRef.value
-      if (!el) return
-      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight)
-      el.scrollTop = (maxScroll * percent) / 100
-    }
-
-    const onScrollSliderInput = () => {
-      sliderDrivingScroll = true
-      setFormScrollByPercent(scrollPercent.value)
-      // 滚动事件在下一帧派发，等两帧再放开，避免 onFormScroll 反向回写造成抖动
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          sliderDrivingScroll = false
-        })
-      })
-    }
-
-    const onFormScroll = () => {
-      closeDropdowns()
-      const el = formScrollRef.value
-      if (!el) return
-      if (sliderDrivingScroll) return
-      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight)
-      scrollPercent.value = maxScroll === 0 ? 0 : (el.scrollTop / maxScroll) * 100
-    }
-
-    // 模型列表变化会改变内容高度，导致当前 scrollTop 对应的百分比变化；
-    // 用 ResizeObserver 反向同步一次，保证滑块位置始终与真实滚动位置一致
-    const startScrollSyncObserver = () => {
-      if (scrollSyncObserver) return
-      const el = formScrollRef.value
-      if (!el || typeof ResizeObserver === 'undefined') return
-      scrollSyncObserver = new ResizeObserver(() => {
-        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight)
-        scrollPercent.value = maxScroll === 0 ? 0 : (el.scrollTop / maxScroll) * 100
-      })
-      scrollSyncObserver.observe(el)
-    }
-
-    const stopScrollSyncObserver = () => {
-      scrollSyncObserver?.disconnect()
-      scrollSyncObserver = null
-    }
 
     const savedProviders = ref([])
     const showApiKey = ref(false)
@@ -446,6 +385,8 @@ export default {
     const isValid = computed(() => config.value.baseUrl.trim() !== '')
 
     let fetchTimer = null
+    let providerConfigSeq = 0
+    let providerKeyOwner = ''
 
     const loadSavedProviders = async () => {
       try {
@@ -467,25 +408,51 @@ export default {
     // baseUrl/apiMode 优先取 providers.json 中保存的设置；
     // apiKey 从该提供商最近一条历史记录中补取（providers.json 不保存 apiKey）
     const applyProviderConfig = async (name) => {
-      try {
-        const settings = await readProviderSettings(name)
-        const history = await readHistory()
-        const record = history.find((r) => r.config?.provider === name)
+      const requestId = ++providerConfigSeq
+      const preserveCurrentKey = providerKeyOwner === name
+      const keyAtRequest = config.value.apiKey
 
+      try {
+        const [settings, history] = await Promise.all([readProviderSettings(name), readHistory()])
+        if (requestId !== providerConfigSeq || config.value.provider.trim() !== name) return
+
+        const record = history.find((r) => r.config?.provider === name)
         const merged = {
           baseUrl: settings?.baseUrl || record?.config?.baseUrl,
           apiMode: settings?.apiMode || record?.config?.apiMode,
           apiKey: record?.config?.apiKey,
         }
 
-        if (!merged.baseUrl && !merged.apiMode && !merged.apiKey) return
+        providerKeyOwner = name
+        const keyChangedDuringLoad = config.value.apiKey !== keyAtRequest
+        if (!merged.baseUrl && !merged.apiMode && !merged.apiKey) {
+          if (!preserveCurrentKey && !keyChangedDuringLoad) config.value.apiKey = ''
+          return
+        }
         if (merged.baseUrl) config.value.baseUrl = merged.baseUrl
         if (merged.apiMode) config.value.apiMode = merged.apiMode
-        // 只补空值：用户已经输入/粘贴新 Key 时，不被历史里的旧 Key 覆盖
-        if (merged.apiKey && !config.value.apiKey.trim()) config.value.apiKey = merged.apiKey
+
+        if (!preserveCurrentKey && !keyChangedDuringLoad) {
+          config.value.apiKey = merged.apiKey || ''
+        } else if (
+          preserveCurrentKey &&
+          !keyChangedDuringLoad &&
+          !config.value.apiKey.trim() &&
+          merged.apiKey
+        ) {
+          config.value.apiKey = merged.apiKey
+        }
       } catch (error) {
+        if (requestId !== providerConfigSeq || config.value.provider.trim() !== name) return
         console.error('加载提供商配置失败:', error)
+        if (providerKeyOwner !== name && config.value.apiKey === keyAtRequest) {
+          config.value.apiKey = ''
+        }
       }
+    }
+
+    const onApiKeyInput = () => {
+      providerKeyOwner = config.value.provider.trim()
     }
 
     const openDropdown = (dropdown, el) => {
@@ -520,6 +487,7 @@ export default {
     const onProviderChange = () => {
       const name = config.value.provider.trim()
       if (!name) return
+      config.value.provider = name
       applyProviderConfig(name)
     }
 
@@ -601,13 +569,15 @@ export default {
         const text = await navigator.clipboard.readText()
         switch (contextMenu.value.target) {
           case 'provider':
-            config.value.provider = text
+            config.value.provider = text.trim()
+            onProviderChange()
             break
           case 'baseUrl':
             config.value.baseUrl = text
             break
           case 'apiKey':
             config.value.apiKey = text
+            onApiKeyInput()
             break
         }
       } catch (error) {
@@ -636,6 +606,8 @@ export default {
         apiMode: newConfig.apiMode ?? config.value.apiMode,
         apiKey: newConfig.apiKey ?? config.value.apiKey,
       }
+      providerKeyOwner = config.value.provider.trim()
+      testStore.clearCurrentConfig()
     }
 
     watch(
@@ -691,7 +663,6 @@ export default {
     onMounted(() => {
       if (!channelStore.initialized) channelStore.load()
       loadSavedProviders()
-      startScrollSyncObserver()
       document.addEventListener('mousedown', handleMousedownOutside)
       document.addEventListener('click', handleClickOutside)
       window.addEventListener('resize', closeDropdowns)
@@ -699,7 +670,6 @@ export default {
 
     onUnmounted(() => {
       if (fetchTimer) clearTimeout(fetchTimer)
-      stopScrollSyncObserver()
       document.removeEventListener('mousedown', handleMousedownOutside)
       document.removeEventListener('click', handleClickOutside)
       window.removeEventListener('resize', closeDropdowns)
@@ -724,6 +694,7 @@ export default {
       saveAsChannel,
       contextMenu,
       onProviderChange,
+      onApiKeyInput,
       onTest,
       onTestSingleModel,
       onSave,
@@ -739,47 +710,95 @@ export default {
       providerDropdown,
       providerFieldRef,
       loadSavedProviders,
-      formScrollRef,
-      scrollSliderInput,
-      scrollPercent,
-      onScrollSliderInput,
-      onFormScroll,
     }
   },
 }
 </script>
 
 <style scoped>
-input[type='range'].scroll-slider {
-  height: 14px;
-  appearance: none;
-  background: transparent;
-  cursor: pointer;
+.config-panel {
+  container-name: config-panel;
+  container-type: inline-size;
 }
-input[type='range'].scroll-slider::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: #d1d5db;
+
+.config-content {
+  display: grid;
+  grid-template-areas:
+    'fields'
+    'models'
+    'actions';
+  gap: 1rem;
+  min-height: calc(100% - 1rem);
+  margin-top: 1rem;
 }
-input[type='range'].scroll-slider::-webkit-slider-thumb {
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  margin-top: -4px;
-  border-radius: 50%;
-  background: #3b82f6;
-  border: none;
+
+.config-fields {
+  display: grid;
+  grid-area: fields;
+  align-content: start;
+  gap: 0.75rem;
+  min-width: 0;
 }
-input[type='range'].scroll-slider::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: #d1d5db;
+
+.config-actions-results {
+  display: grid;
+  grid-area: actions;
+  align-content: start;
+  gap: 0.75rem;
+  min-width: 0;
 }
-input[type='range'].scroll-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #3b82f6;
-  border: none;
+
+.form-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.model-section {
+  display: flex;
+  grid-area: models;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.model-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.model-list {
+  min-height: 9rem;
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.model-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+@container config-panel (min-width: 580px) {
+  .config-content {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    grid-template-areas:
+      'fields models'
+      'actions models';
+    align-items: stretch;
+  }
+
+  .model-list {
+    flex: 1;
+    max-height: none;
+  }
+}
+
+@container config-panel (max-width: 579px) {
+  .model-selection > span {
+    min-width: 0;
+  }
 }
 </style>
