@@ -2,7 +2,9 @@ node_modules/
 dist/
 dist-app/
 dist-electron/
-build/
+# 打包必需的 NSIS 脚本需随仓库保存，其余 build 产物忽略
+build/*
+!build/installer.nsh
 *.log
 .DS_Store
 
@@ -37,3 +39,12 @@ dist-app-build*/
 
 # 本地打包测试输出
 dist-test/
+
+# 本地临时测试目录（Electron 兼容性 / 打包测试残留）
+.tmp-*/
+.screenshots/
+.zwork/
+.arts/
+
+# 打包版本探测的临时输出
+electron-ver.txt

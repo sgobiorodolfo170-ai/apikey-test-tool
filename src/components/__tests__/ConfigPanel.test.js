@@ -200,6 +200,18 @@ describe('ConfigPanel', () => {
     expect(testBtn[0].attributes('disabled')).toBeUndefined()
   })
 
+  it('allows keyless testing in openai mode for local relay (Base URL only)', async () => {
+    vi.spyOn(testStore, 'fetchModels').mockResolvedValue()
+    wrapper.vm.config.baseUrl = 'http://127.0.0.1:8787/v1'
+    wrapper.vm.config.apiKey = ''
+    await wrapper.vm.$nextTick()
+
+    const testBtn = wrapper.findAll('button').filter((b) => b.text() === '开始测试')
+    expect(testBtn[0].attributes('disabled')).toBeUndefined()
+    // 无 Key 时提示免鉴权语义
+    expect(wrapper.text()).toContain('免鉴权')
+  })
+
   it('should list saved providers when the provider dropdown is opened', async () => {
     readProviders.mockResolvedValue(['prov-a', 'prov-b'])
     await wrapper.vm.loadSavedProviders()
@@ -360,5 +372,74 @@ describe('ConfigPanel 内嵌测试结果', () => {
     expect(wrapper.text()).toContain('暂无测试结果')
     // 配置面板作为历史卡片的一个选项卡，不再自带卡片外壳
     expect(wrapper.findAll('.card')).toHaveLength(0)
+  })
+
+  it('keeps the result box pinned to the card bottom and growing with it', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    // 展示框弹性占据剩余高度：flex-grow 随卡片变高，flex-shrink-0 + min-h-64 保底不被压没
+    const section = wrapper.findAll('div').find((d) => d.classes().includes('flex-grow'))
+    expect(section).toBeDefined()
+    expect(section.classes()).toContain('flex-shrink-0')
+    expect(section.classes()).toContain('min-h-64')
+
+    // 根节点不再整体滚动，滚动收敛到表单区内层容器，展示框因此始终贴住卡片底部
+    const root = wrapper.find('.flex-1.min-h-0.w-full')
+    expect(root.classes()).not.toContain('overflow-y-auto')
+    expect(root.find('.overflow-y-auto').exists()).toBe(true)
+  })
+
+  it('renders the content position slider in the toolbar', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    const slider = wrapper.find('input[type="range"]')
+    expect(slider.exists()).toBe(true)
+    expect(slider.attributes('aria-label')).toBe('配置内容区滚动定位滑块')
+    expect(slider.attributes('min')).toBe('0')
+    expect(slider.attributes('max')).toBe('100')
+  })
+
+  it('slider drives the form scroll position by percent', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    const scrollEl = wrapper.find('.overflow-y-auto').element
+    // 模拟可滚动内容：scrollHeight > clientHeight
+    Object.defineProperty(scrollEl, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(scrollEl, 'clientHeight', { value: 500, configurable: true })
+
+    wrapper.vm.scrollPercent = 100
+    wrapper.vm.onScrollSliderInput()
+    expect(scrollEl.scrollTop).toBe(500)
+
+    wrapper.vm.scrollPercent = 0
+    wrapper.vm.onScrollSliderInput()
+    expect(scrollEl.scrollTop).toBe(0)
+
+    wrapper.vm.scrollPercent = 50
+    wrapper.vm.onScrollSliderInput()
+    expect(scrollEl.scrollTop).toBe(250)
+  })
+
+  it('does not duplicate the form scroll container when the slider is added', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ConfigPanel, {
+      global: { plugins: [pinia], stubs: { teleport: true } },
+    })
+
+    const root = wrapper.find('.flex-1.min-h-0.w-full')
+    expect(root.find('.overflow-y-auto').exists()).toBe(true)
   })
 })

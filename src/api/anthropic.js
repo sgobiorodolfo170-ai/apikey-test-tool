@@ -2,6 +2,7 @@ import http from './http.js'
 import { toAnthropicContent } from './multimodal.js'
 import {
   buildUrl,
+  authHeaders,
   getErrorMessage,
   createController,
   releaseController,
@@ -30,7 +31,7 @@ export async function testAnthropicConnection(config) {
       },
       {
         headers: {
-          'x-api-key': apiKey,
+          ...authHeaders(apiKey, 'anthropic'),
           'Content-Type': 'application/json',
           'anthropic-version': '2023-06-01',
         },
@@ -100,7 +101,7 @@ export async function testAnthropicModelLatency(config, model) {
       },
       {
         headers: {
-          'x-api-key': apiKey,
+          ...authHeaders(apiKey, 'anthropic'),
           'Content-Type': 'application/json',
           'anthropic-version': '2023-06-01',
         },
@@ -167,7 +168,7 @@ export async function sendAnthropicChat(
       },
       {
         headers: {
-          'x-api-key': apiKey,
+          ...authHeaders(apiKey, 'anthropic'),
           'Content-Type': 'application/json',
           'anthropic-version': '2023-06-01',
         },
@@ -218,7 +219,7 @@ export async function streamAnthropicChat(
       },
       {
         headers: {
-          'x-api-key': apiKey,
+          ...authHeaders(apiKey, 'anthropic'),
           'Content-Type': 'application/json',
           'anthropic-version': '2023-06-01',
           Accept: 'text/event-stream',

@@ -76,6 +76,18 @@
         >
           统计
         </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-sm rounded-card transition-colors"
+          :class="
+            activeTab === 'diagnostics'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-surface-hover'
+          "
+          @click="activeTab = 'diagnostics'"
+        >
+          诊断日志
+        </button>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
         <button
@@ -240,6 +252,7 @@
     <RelayPanel v-else-if="activeTab === 'relay'" />
     <RelayStatsPanel v-else-if="activeTab === 'stats'" />
     <RelayUsagePanel v-else-if="activeTab === 'usage'" />
+    <RelayDiagnosticsPanel v-else-if="activeTab === 'diagnostics'" />
     <ConfigPanel v-else />
     <SettingsDialog :open="settingsOpen" @close="settingsOpen = false" />
   </div>
@@ -259,6 +272,7 @@ import ChannelPanel from './ChannelPanel.vue'
 import RelayPanel from './RelayPanel.vue'
 import RelayStatsPanel from './RelayStatsPanel.vue'
 import RelayUsagePanel from './RelayUsagePanel.vue'
+import RelayDiagnosticsPanel from './RelayDiagnosticsPanel.vue'
 import ConfigPanel from './ConfigPanel.vue'
 import SettingsDialog from './SettingsDialog.vue'
 
@@ -269,6 +283,7 @@ export default {
     RelayPanel,
     RelayStatsPanel,
     RelayUsagePanel,
+    RelayDiagnosticsPanel,
     ConfigPanel,
     SettingsDialog,
   },

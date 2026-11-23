@@ -3,7 +3,7 @@
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 flex-shrink-0">
       <span class="text-[14px] text-text-muted flex-1 truncate">
         共 {{ summary.total }} 个请求（最近 3 天） · 请求成功率 {{ summary.rate }}% · 尝试成功率
-        {{ summary.attemptRate }}% · 故障转移 {{ summary.failovers }} 次 · 每 2 秒刷新
+        {{ summary.attemptRate }}% · 故障转移 {{ summary.failovers }} 次 · 每 5 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>
       <button
@@ -40,6 +40,7 @@
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">总调用</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">故障转移 / 成功 Key</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">延迟</th>
+            <th class="px-2 py-1.5 font-medium whitespace-nowrap">TTFT / 速度</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">时间</th>
             <th class="px-2 py-1.5 font-medium whitespace-nowrap">本次用量</th>
           </tr>
@@ -103,6 +104,9 @@
             <td class="px-2 py-1.5 whitespace-nowrap" :title="`尝试 ${row.attempts} 次`">
               {{ row.ms }}ms
             </td>
+            <td class="px-2 py-1.5 whitespace-nowrap" :title="metricsTitle(row)">
+              {{ metricsText(row) }}
+            </td>
             <td class="px-2 py-1.5 whitespace-nowrap">{{ shortTime(row.at) }}</td>
             <td class="px-2 py-1.5 whitespace-nowrap" :title="usageTitle(row)">
               {{ usageText(row) }}
@@ -117,6 +121,7 @@
 <script>
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
+import { formatTps, formatTtft } from '../core/metrics/usage.js'
 
 export default {
   name: 'RelayStatsPanel',
@@ -250,6 +255,25 @@ export default {
         ? `输入 ${row.usage.prompt} · 输出 ${row.usage.completion} · 合计 ${row.usage.total}`
         : '该次请求未返回 usage'
 
+    // TTFT / 速度：取最终成功尝试的指标；流式才有真实 TTFT
+    const metricsText = (row) => {
+      const last = row.status || {}
+      if (last.ttftMs == null && last.tps == null) return '—'
+      return `${formatTtft(last.ttftMs)} · ${formatTps(last.tps)}`
+    }
+
+    const metricsTitle = (row) => {
+      const last = row.status || {}
+      const parts = []
+      if (last.ttftMs != null) parts.push(`首 token ${formatTtft(last.ttftMs)}`)
+      if (last.tps != null) parts.push(`输出速度 ${formatTps(last.tps)}`)
+      if (Number(last.reasoningTokens) > 0) {
+        parts.push(`含 reasoning ${last.reasoningTokens} tokens（已从速度中剔除）`)
+      }
+      if (last.usageMissing) parts.push('上游未返回 usage')
+      return parts.length > 0 ? parts.join(' · ') : '该次请求没有可用的速度指标'
+    }
+
     onMounted(() => {
       refresh()
       timer = setInterval(poll, 5000)
@@ -276,6 +300,8 @@ export default {
       shortTime,
       usageText,
       usageTitle,
+      metricsText,
+      metricsTitle,
     }
   },
 }

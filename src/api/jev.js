@@ -1,6 +1,7 @@
 import http from './http.js'
 import {
   buildUrl,
+  authHeaders,
   getErrorMessage,
   extractProviderError,
   describeListError,
@@ -26,7 +27,7 @@ export function normalizeJevBaseUrl(baseUrl) {
 
 function jevHeaders(apiKey) {
   return {
-    Authorization: `Bearer ${apiKey}`,
+    ...authHeaders(apiKey),
     'Content-Type': 'application/json',
   }
 }

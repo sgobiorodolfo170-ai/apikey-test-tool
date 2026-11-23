@@ -27,7 +27,7 @@
 xattr -dr com.apple.quarantine "/Applications/APIKey测试工具.app"
 ```
 
-构建说明见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)；macOS 包必须在 macOS 上执行 `npm run build:mac`。
+构建说明见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)，发版前的打包核查清单见 [docs/PACKAGING.md](docs/PACKAGING.md)；macOS 包必须在 macOS 上执行 `npm run build:mac`。
 
 **开发模式**：
 
@@ -79,17 +79,17 @@ Base URL 写错时，优先检查是否需要带 `/v1`；工具会尝试 `/chat/
 - Windows：`%APPDATA%\APIKey测试工具`
 - macOS：`~/Library/Application Support/APIKey测试工具`
 
-| 文件                | 内容                                      |
-| ------------------- | ----------------------------------------- |
-| `history.json`      | 测试/体检历史，最多 100 条                |
-| `providers.json`    | 提供商名称 → Base URL / 模式（不含 Key）  |
-| `channels.json`     | 渠道完整配置（含加密后的 Key）            |
-| `relay.json`        | 中转站配置（含加密后的上游 Key）          |
-| `relay-usage.json`  | 中转站日志、统计、额度事件（含 Key 尾号） |
-| `app-settings.json` | 托盘/开机自启                             |
-| `window-state.json` | 窗口位置与大小                            |
-| `ERROR_LOG.md`      | 运行时错误日志，超过 1MB 归档为 `.1.md`   |
-| `exports/`          | 手动导出的体检报告                        |
+| 文件                | 内容                                                      |
+| ------------------- | --------------------------------------------------------- |
+| `history.json`      | 测试/体检历史，最多 100 条                                |
+| `providers.json`    | 提供商名称 → Base URL / 模式（不含 Key）                  |
+| `channels.json`     | 渠道完整配置（含加密后的 Key）                            |
+| `relay.json`        | 中转站配置（含加密后的上游 Key）                          |
+| `relay-usage.json`  | 中转站日志、统计、诊断事件与长期提供商观察（含 Key 尾号） |
+| `app-settings.json` | 托盘/开机自启                                             |
+| `window-state.json` | 窗口位置与大小                                            |
+| `ERROR_LOG.md`      | 运行时错误日志，超过 1MB 归档为 `.1.md`                   |
+| `exports/`          | 手动导出的体检报告                                        |
 
 **Key 保护**：落盘前经主进程 `safeStorage` 加密（Windows DPAPI / macOS Keychain）。若系统不支持或加密失败，会退回明文并在控制台告警；换机/换用户后密文无法解密，需要重新输入。历史记录中包含加密后的 Key，对外分享 `history.json` 前请自行确认。
 
@@ -101,12 +101,13 @@ Base URL 写错时，优先检查是否需要带 `/v1`；工具会尝试 `/chat/
 
 - 客户端把 Base URL 指过来，按模型名路由到对应上游；支持 SSE 流式透传
 - 一个上游可配多把 Key，401/403/429 或网络错误时自动切换
-- 多 Key 默认按「剩余额度水位」加权调度；同账号多 Key 可在共享组组件中建组并归组（仅当前提供商内生效）
+- 多 Key 按真实调用状态调度：真实 429 锁定的 Key 跳过，解锁探测期降权，其余平滑轮询；同账号多 Key 可归入共享账号组，共享真实 429 锁定（仅当前提供商内生效）
 - 支持模型别名、`/v1/embeddings`、精确缓存（仅非流式）
 - 每个上游可设并发上限（默认 4）、RPM、排队超时
 - 可选访问 Key 与多客户端 Key；默认本机免鉴权
-- 额度窗口（5 小时 / 7 天）按 Key 分别记账，支持按模型独立额度（商汤预设已按模型拆分），持久化到 `relay-usage.json`
+- 额度保护完全按真实调用结果：普通连续 429 按 5 分钟探测 → 5 小时 → 7 天升级，上游明确额度耗尽直接锁 5 小时，真实成功即恢复；按 Key × 模型隔离，锁定持久化到 `relay-usage.json`
 - 调用监控与统计每 5 秒刷新（页面隐藏时暂停），调用日志保留最近 3 天 / 统计最多 200 组
+- 诊断日志保留 30 天事件；提供商观察按「提供商 + 模型 + 日期」累计调用、429、延迟、锁定与恢复，保留 180 天，可筛选并复制 JSON
 - 关闭窗口会隐藏到托盘，中转服务继续运行；托盘菜单可启停、开机自启、退出
 
 完整说明（路由规则、429 撞墙判定、限额、缓存、故障排查）见 [docs/RELAY.md](docs/RELAY.md)。
@@ -117,11 +118,12 @@ Base URL 写错时，优先检查是否需要带 `/v1`；工具会尝试 `/chat/
 npm test            # Vitest 单元/组件测试
 npm run lint        # ESLint
 npm run format:check
-npm run build       # vite build + electron-builder
+npm run build       # vite build + electron-builder（含产物核查）
+npm run verify:app  # 启动已打包应用，确认不是白屏
 npm run smoke       # 真实 Electron 冒烟（需先 build）
 ```
 
-架构、IPC 清单、存储结构、环境变量与打包说明见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+架构、IPC 清单、存储结构、环境变量与打包说明见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)；发版前的打包核查清单见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 
 ## 已知限制
 

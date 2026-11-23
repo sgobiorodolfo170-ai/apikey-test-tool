@@ -71,6 +71,17 @@ describe('anthropic api module', () => {
       expect(result.status).toBe(401)
     })
 
+    it('omits x-api-key when the key is empty (本地中转免鉴权)', async () => {
+      axios.post.mockResolvedValueOnce({ data: { content: [{ text: 'ok' }] } })
+      const result = await testAnthropicConnection({
+        baseUrl: 'https://token.sensenova.cn',
+        apiKey: '',
+      })
+      expect(result.connected).toBe(true)
+      const headers = axios.post.mock.calls[0][2].headers
+      expect(headers['x-api-key']).toBeUndefined()
+    })
+
     it('should handle abort', async () => {
       axios.post.mockRejectedValue({ name: 'CanceledError' })
       const result = await testAnthropicConnection(mockConfig)

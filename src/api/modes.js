@@ -66,33 +66,16 @@ import {
   sendSpeechChat,
 } from './openai-media.js'
 
-// 可选 API 模式（顺序即配置面板中的展示顺序）
-export const API_MODES = [
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'openai-responses', label: 'OpenAI Responses' },
-  { value: 'openai-like', label: 'OpenAI-like' },
-  { value: 'openai-image', label: 'OpenAI 图片' },
-  { value: 'openai-speech', label: 'OpenAI 语音' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'azure-openai', label: 'Azure OpenAI' },
-  { value: 'gemini', label: 'Google Gemini' },
-  { value: 'ollama', label: 'Ollama' },
-  { value: 'jev', label: 'Jev (TypeSafe)' },
-]
+// API 模式与供应商元数据统一由 src/data/providers.json 提供。
+// 这里保留原有导出名，调用方不需要改。
+import {
+  API_MODES,
+  API_MODES_WITHOUT_KEY,
+  VISION_CAPABLE_MODES,
+  buildAdapters,
+} from '../core/providers/registry.js'
 
-// 无需 API Key 即可访问的模式（如本地 Ollama）
-export const API_MODES_WITHOUT_KEY = ['ollama']
-
-// 支持图片输入的模式（对话里可附图）。图片生成/语音/决策类模式不在此列。
-export const VISION_CAPABLE_MODES = [
-  'openai',
-  'openai-like',
-  'openai-responses',
-  'anthropic',
-  'azure-openai',
-  'gemini',
-  'ollama',
-]
+export { API_MODES, API_MODES_WITHOUT_KEY, VISION_CAPABLE_MODES }
 
 export function apiModeSupportsVision(apiMode) {
   return VISION_CAPABLE_MODES.includes(apiMode)
@@ -107,7 +90,7 @@ const openAIAdapter = {
   chatStream: streamOpenAIChat,
 }
 
-const ADAPTERS = {
+const ADAPTERS = buildAdapters({
   openai: openAIAdapter,
   'openai-like': openAIAdapter,
   'openai-responses': {
@@ -171,7 +154,7 @@ const ADAPTERS = {
     testModels: testSpeechModels,
     chat: sendSpeechChat,
   },
-}
+})
 
 export function getApiAdapter(apiMode) {
   // 老配置可能没有 apiMode，历史默认就是 OpenAI；只有明确写了未知模式才报错

@@ -2,6 +2,7 @@ import http from './http.js'
 import { toResponsesContent } from './multimodal.js'
 import {
   buildUrl,
+  authHeaders,
   getErrorMessage,
   extractProviderError,
   createController,
@@ -51,7 +52,7 @@ export async function testResponsesConnection(config) {
           },
           {
             headers: {
-              Authorization: `Bearer ${apiKey}`,
+              ...authHeaders(apiKey),
               'Content-Type': 'application/json',
             },
             timeout: TIMEOUT,
@@ -134,7 +135,7 @@ export async function testResponsesModelLatency(config, model) {
           },
           {
             headers: {
-              Authorization: `Bearer ${apiKey}`,
+              ...authHeaders(apiKey),
               'Content-Type': 'application/json',
             },
             timeout: TIMEOUT,
@@ -217,7 +218,7 @@ export async function sendResponsesChat(
           },
           {
             headers: {
-              Authorization: `Bearer ${apiKey}`,
+              ...authHeaders(apiKey),
               'Content-Type': 'application/json',
             },
             timeout,
@@ -281,7 +282,7 @@ export async function streamResponsesChat(
           },
           {
             headers: {
-              Authorization: `Bearer ${apiKey}`,
+              ...authHeaders(apiKey),
               'Content-Type': 'application/json',
               Accept: 'text/event-stream',
             },

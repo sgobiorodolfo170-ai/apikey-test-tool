@@ -100,6 +100,7 @@ describe('限流与并发控制', () => {
     await startWith([
       provider('qto', '慢上游', slowPort, { maxConcurrency: 1, queueTimeoutMs: 50 }),
     ])
+    relay.clearLogs()
 
     const first = call()
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -107,6 +108,10 @@ describe('限流与并发控制', () => {
 
     expect(second.status).toBe(429)
     expect((await first).status).toBe(200)
+
+    // 本地限流最终也返回 429：调用监控应按限流展示，而不是状态为 0 的「失败 / ERR」
+    const queuedLog = relay.getLogs().find((item) => String(item.error || '').includes('排队超时'))
+    expect(queuedLog?.status).toBe(429)
   })
 
   it('fails over to another provider when the first is rate limited', async () => {

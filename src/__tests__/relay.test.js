@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -967,84 +967,36 @@ describe('会话粘性 / 客户端归因 / 取消 / 缓存加固', () => {
 })
 
 describe('额度窗口（5 小时 / 7 天）', () => {
-  it('normalizes quota config', () => {
+  it('normalizes quota config to real-response auto protection', () => {
     expect(
       relay.normalizeQuota({
         enabled: true,
+        // 旧字段应被丢弃，不再参与额度判定
         metric: 'credit',
         limit5h: 10,
         limitWeek: 50,
         creditsPerMillionTokens: 4,
+        perModel: true,
+        modelRates: { m: 3 },
       }),
     ).toEqual({
       enabled: true,
-      metric: 'credit',
-      windowMode: 'rolling',
-      limitMonth: 0,
-      limit5h: 10,
-      limitWeek: 50,
-      creditsPerMillionTokens: 4,
       confirmStrikes: 0,
       confirmIntervalMinutes: 0,
       confirmSpanMinutes: 0,
       burstWindowMinutes: 0,
       burstStrikes: 0,
-      reserveRatio: 0,
       warmupMinutes: 0,
-      perModel: false,
       group: '',
       groups: [],
       keyGroups: {},
-      modelLimits: {},
-      modelRates: {},
     })
-    expect(relay.normalizeQuota({ enabled: true }).enabled).toBe(false)
-    expect(relay.normalizeQuota({ enabled: true, limit5h: 5 }).metric).toBe('request')
+    // 没有配置任何上限也可以开启：是否锁定只由真实 429 决定
+    expect(relay.normalizeQuota({ enabled: true }).enabled).toBe(true)
+    expect(relay.normalizeQuota({ enabled: false }).enabled).toBe(false)
   })
 
-  it('blocks after the 5h request limit and ignores invalid requests', () => {
-    relay.clearRuntime()
-    const provider = {
-      id: 'q1',
-      name: 'Q1',
-      quota: { enabled: true, metric: 'request', limit5h: 2, limitWeek: 100 },
-    }
-
-    relay.recordQuota(provider, { status: 400 })
-    relay.recordQuota(provider, { status: 429 })
-    relay.recordQuota(provider, { status: 500 })
-    expect(relay.quotaBlocked(provider)).toBeNull()
-
-    relay.recordQuota(provider, { status: 200 })
-    expect(relay.quotaBlocked(provider)).toBeNull()
-
-    relay.recordQuota(provider, { status: 200 })
-    const blocked = relay.quotaBlocked(provider)
-    expect(blocked.window).toBe('5h')
-    expect(blocked.retryAfter).toBeGreaterThan(0)
-    relay.clearRuntime()
-  })
-
-  it('counts credits from token usage', () => {
-    relay.clearRuntime()
-    const provider = {
-      id: 'q2',
-      quota: {
-        enabled: true,
-        metric: 'credit',
-        limit5h: 1,
-        limitWeek: 100,
-        creditsPerMillionTokens: 4,
-      },
-    }
-
-    relay.recordQuota(provider, { status: 200, usage: { total: 250000 } })
-    // 250k tokens × 4 墨点 / 1M = 1 墨点
-    expect(relay.quotaBlocked(provider).window).toBe('5h')
-    relay.clearRuntime()
-  })
-
-  it('requires spaced 429s before locking a key', async () => {
+  it('requires spaced real 429s before locking a key', async () => {
     relay.clearRuntime()
     const provider = {
       id: 'q5',
@@ -1052,159 +1004,118 @@ describe('额度窗口（5 小时 / 7 天）', () => {
       apiKey: 'sk-429',
       quota: {
         enabled: true,
-        metric: 'request',
-        limit5h: 100,
-        limitWeek: 100,
         confirmStrikes: 3,
         confirmIntervalMinutes: 0.002,
       },
     }
 
     // 同一波 429（间隔不足）只算一次
-    relay.noteQuotaHit(provider)
-    relay.noteQuotaHit(provider)
-    relay.noteQuotaHit(provider)
-    expect(relay.quotaBlocked(provider)).toBeNull()
+    relay.noteQuotaHit(provider, 'm')
+    relay.noteQuotaHit(provider, 'm')
+    relay.noteQuotaHit(provider, 'm')
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
 
     await new Promise((resolve) => setTimeout(resolve, 150))
-    relay.noteQuotaHit(provider)
+    relay.noteQuotaHit(provider, 'm')
     await new Promise((resolve) => setTimeout(resolve, 150))
-    const lock = relay.noteQuotaHit(provider)
-    expect(lock.level).toBe('5h')
+    const lock = relay.noteQuotaHit(provider, 'm')
+    expect(lock.level).toBe('probe')
 
-    const blocked = relay.quotaBlocked(provider)
+    const blocked = relay.quotaBlocked(provider, 'm')
     expect(blocked.locked).toBe(true)
-    expect(blocked.window).toBe('5h')
-    // 锁定时长按本地记账估算，至少 5 分钟；本地没有用量记录时也不会短于 5 分钟
+    expect(blocked.window).toBe('probe')
+    // 首次确认先探测 5 分钟，而不是直接锁 5 小时
     expect(blocked.retryAfter).toBeGreaterThanOrEqual(300)
-    relay.clearRuntime()
-  })
-
-  it('tracks quota per key (each key is its own account)', () => {
-    relay.clearRuntime()
-    const base = {
-      id: 'q3',
-      name: 'Q3',
-      quota: { enabled: true, metric: 'request', limit5h: 1, limitWeek: 100 },
-    }
-    const first = { ...base, apiKey: 'sk-key-1' }
-    const second = { ...base, apiKey: 'sk-key-2' }
-
-    relay.recordQuota(first, { status: 200 })
-    expect(relay.quotaBlocked(first)).not.toBeNull()
-    expect(relay.quotaBlocked(second)).toBeNull()
-
-    relay.recordQuota(second, { status: 200 })
-    expect(relay.quotaBlocked(second)).not.toBeNull()
     relay.clearRuntime()
   })
 })
 
-describe('额度窗口（端到端）', () => {
+describe('testKey 测通（/models 与指定模型）', () => {
   let upstream
-  let upstreamPort
+  let port
+  const requests = []
 
   beforeAll(async () => {
     upstream = http.createServer((req, res) => {
-      req.on('data', () => {})
+      let body = ''
+      req.on('data', (chunk) => {
+        body += chunk
+      })
       req.on('end', () => {
+        requests.push({ url: req.url, method: req.method, auth: req.headers.authorization, body })
+        if (req.url.endsWith('/chat/completions')) {
+          if (req.headers.authorization === 'Bearer sk-good') {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x' } }] }))
+          } else {
+            res.writeHead(401, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: { message: 'invalid api key' } }))
+          }
+          return
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(
-          JSON.stringify({
-            id: 'chatcmpl-quota',
-            choices: [{ message: { role: 'assistant', content: 'ok' } }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          }),
-        )
+        res.end(JSON.stringify({ data: [{ id: 'm-1' }, { id: 'm-2' }] }))
       })
     })
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
-    upstreamPort = upstream.address().port
+    port = upstream.address().port
   })
 
   afterAll(() => {
-    relay.stop()
     upstream.close()
-    relay.clearRuntime()
   })
 
-  const makeProvider = (overrides = {}) => ({
-    id: 'limited',
-    name: '限额上游',
-    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
-    models: ['m'],
-    enabled: true,
-    quota: { enabled: true, metric: 'request', limit5h: 1, limitWeek: 10 },
-    ...overrides,
+  it('未指定模型时保持 /models 连通测试', async () => {
+    const result = await relay.testKey({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-good',
+    })
+    expect(result.ok).toBe(true)
+    expect(result.models).toBe(2)
+    expect(result.model).toBeUndefined()
+    expect(requests.at(-1)).toMatchObject({ url: '/v1/models', method: 'GET' })
   })
 
-  const post = (port) =>
-    fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+  it('指定模型时发一次最小化 /chat/completions', async () => {
+    const result = await relay.testKey({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-good',
+      model: 'gpt-test',
+    })
+    expect(result.ok).toBe(true)
+    expect(result.model).toBe('gpt-test')
+    expect(typeof result.ms).toBe('number')
+
+    const last = requests.at(-1)
+    expect(last).toMatchObject({
+      url: '/v1/chat/completions',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'm', messages: [] }),
+      auth: 'Bearer sk-good',
     })
-
-  it('skips the exhausted provider and returns 429 when nothing is left', async () => {
-    relay.clearRuntime()
-    const info = await relay.start({
-      port: 0,
-      providers: [
-        makeProvider(),
-        makeProvider({ id: 'backup', name: '备用上游', quota: undefined }),
-      ],
-    })
-
-    const first = await post(info.port)
-    expect(first.status).toBe(200)
-    await first.json()
-
-    relay.clearLogs()
-    const second = await post(info.port)
-    expect(second.status).toBe(200)
-    await second.json()
-    expect(relay.getLogs()[0].provider).toBe('备用上游')
-
-    relay.stop()
-    const only = await relay.start({ port: 0, providers: [makeProvider()] })
-    const blocked = await post(only.port)
-    expect(blocked.status).toBe(429)
-    expect((await blocked.json()).error.type).toBe('quota_exhausted')
-    expect(blocked.headers.get('retry-after')).toBeTruthy()
+    const parsed = JSON.parse(last.body)
+    expect(parsed.model).toBe('gpt-test')
+    expect(parsed.max_tokens).toBe(1)
+    expect(parsed.messages).toEqual([{ role: 'user', content: 'ping' }])
   })
 
-  it('keeps using other keys of the same provider when one key is exhausted', async () => {
-    relay.clearRuntime()
-    const info = await relay.start({
-      port: 0,
-      providers: [
-        makeProvider({
-          apiKeys: ['sk-aaaa11', 'sk-bbbb22'],
-          quota: { enabled: true, metric: 'request', limit5h: 1, limitWeek: 10 },
-        }),
-      ],
+  it('模型测通失败时透传上游错误', async () => {
+    const result = await relay.testKey({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-bad',
+      model: 'gpt-test',
     })
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('401')
+  })
 
-    relay.clearLogs()
-    const first = await post(info.port)
-    expect(first.status).toBe(200)
-    await first.json()
-
-    const second = await post(info.port)
-    expect(second.status).toBe(200)
-    await second.json()
-
-    const tails = relay
-      .getLogs()
-      .filter((item) => item.status === 200)
-      .map((item) => item.keyTail)
-    expect(new Set(tails).size).toBe(2)
-
-    relay.clearLogs()
-    const third = await post(info.port)
-    expect(third.status).toBe(429)
-    const payload = await third.json()
-    expect(payload.error.type).toBe('quota_exhausted')
-    expect(payload.error.skippedKeys).toHaveLength(2)
+  it('空白模型名视为未指定', async () => {
+    const result = await relay.testKey({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-good',
+      model: '   ',
+    })
+    expect(result.ok).toBe(true)
+    expect(result.models).toBe(2)
+    expect(result.model).toBeUndefined()
   })
 })

@@ -212,7 +212,17 @@ describe('RelayUsagePanel 缓存节省', () => {
     expect(text).toContain('7日调用')
     expect(text).toContain('月调用')
     const headers = wrapper.findAll('thead th').map((th) => th.text())
-    expect(headers).toEqual(['提供商', 'Key', '调用', '成功', '输入', '输出', '合计', '最近'])
+    expect(headers).toEqual([
+      '提供商',
+      'Key',
+      '调用',
+      '成功',
+      '输入',
+      '输出',
+      '合计',
+      'TTFT / 速度',
+      '最近',
+    ])
 
     const rowCells = () =>
       wrapper
@@ -226,5 +236,30 @@ describe('RelayUsagePanel 缓存节省', () => {
     const weekTab = wrapper.findAll('button').find((button) => button.text() === '7日调用')
     await weekTab.trigger('click')
     expect(rowCells().slice(2, 7)).toEqual(['7', '6', '300', '200', '500'])
+  })
+
+  it('renders the empty state when store stats are not loaded yet (undefined fields)', async () => {
+    // 回归：ERROR_LOG.md 里 19 条渲染期崩溃（reading 'hour' / reading 'length'）——
+    // 主进程统计未返回时 store 字段可能还是 undefined，面板必须兜底而不是抛错
+    relayStore.logs = undefined
+    relayStore.tokenHistory = undefined
+    relayStore.tokenHourly = undefined
+    relayStore.providers = undefined
+    relayStore.keyUsage = undefined
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('还没有 token 统计')
+  })
+
+  it('skips malformed stat entries instead of throwing during render', async () => {
+    relayStore.logs = [null, { at: 'not-a-date', provider: '上游A', status: 200, keyTail: 'abcd' }]
+    relayStore.tokenHistory = [null, { date: '2026-11-01' }]
+    relayStore.providers = [null, { id: 'p1', name: '上游A' }]
+    relayStore.keyUsage = [null, { provider: '上游A', keyTail: 'abcd', windows: null }]
+    await wrapper.vm.$nextTick()
+
+    // 渲染不抛错即通过：残缺条目按空数据跳过，不影响其余条目展示
+    expect(wrapper.text()).toContain('按 Key 统计')
+    expect(wrapper.text()).toContain('…abcd')
   })
 })

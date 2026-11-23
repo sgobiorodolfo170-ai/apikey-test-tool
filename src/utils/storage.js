@@ -202,6 +202,8 @@ const DEFAULT_RELAY = {
   clientKeys: [],
   sticky: false,
   autoStart: true,
+  defaultProviderId: '',
+  lan: { enabled: false },
   cache: { enabled: false, ttlMs: 300000, maxEntries: 200 },
 }
 
@@ -217,6 +219,8 @@ export async function readRelay() {
     clientKeys: normalizeClientKeys(config.clientKeys),
     sticky: config.sticky === true,
     autoStart: config.autoStart !== false,
+    defaultProviderId: typeof config.defaultProviderId === 'string' ? config.defaultProviderId : '',
+    lan: { enabled: config.lan?.enabled === true },
     cache: {
       enabled: config.cache?.enabled === true,
       ttlMs: Math.max(1000, Number(config.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),
@@ -234,6 +238,9 @@ export async function saveRelay(config) {
       clientKeys: normalizeClientKeys(config?.clientKeys),
       sticky: config?.sticky === true,
       autoStart: config?.autoStart !== false,
+      defaultProviderId:
+        typeof config?.defaultProviderId === 'string' ? config.defaultProviderId : '',
+      lan: { enabled: config?.lan?.enabled === true },
       cache: {
         enabled: config?.cache?.enabled === true,
         ttlMs: Math.max(1000, Number(config?.cache?.ttlMs) || DEFAULT_RELAY.cache.ttlMs),

@@ -67,6 +67,7 @@ describe('RelayStatsPanel', () => {
     expect(wrapper.text()).toContain('共 1 个请求')
     expect(wrapper.text()).toContain('请求成功率 100%')
     expect(wrapper.text()).toContain('尝试成功率 50%')
+    expect(wrapper.text()).toContain('每 5 秒刷新')
     expect(wrapper.text()).toContain('req_abc123')
     expect(wrapper.text()).toContain('商汤日日新')
     expect(wrapper.text()).toContain('SenseChat-5')

@@ -50,6 +50,17 @@ describe('openai api module', () => {
       expect(result.status).toBe(401)
     })
 
+    it('omits the Authorization header when the key is empty (本地中转免鉴权)', async () => {
+      axios.post.mockResolvedValueOnce({ data: { choices: [{ message: { content: 'ok' } }] } })
+      const result = await testOpenAIConnection({
+        baseUrl: 'http://127.0.0.1:8787/v1',
+        apiKey: '',
+      })
+      expect(result.connected).toBe(true)
+      const headers = axios.post.mock.calls[0][2].headers
+      expect(headers.Authorization).toBeUndefined()
+    })
+
     it('should connect via /models when chat endpoints all 404', async () => {
       axios.post.mockRejectedValue({ response: { status: 404 } })
       axios.get.mockResolvedValueOnce({ data: { data: [{ id: 'gpt-4' }] } })

@@ -121,6 +121,63 @@
           />
           会话粘性
         </label>
+        <label
+          class="flex items-center gap-1"
+          title="允许局域网内其它设备访问中转站（默认关闭）。开启前必须设置访问 Key，且需重启中转站生效。"
+        >
+          <input type="checkbox" :checked="relayStore.lanEnabled" @change="setLanEnabled($event)" />
+          局域网访问
+        </label>
+      </div>
+
+      <!-- 默认上游：模型未命中时回退到它；只写 defaultProviderId，不碰凭据 -->
+      <div class="flex flex-wrap items-center gap-2 text-[14px] text-text-muted">
+        <span class="flex-shrink-0">默认上游</span>
+        <select
+          class="default-provider-select bg-surface border border-border-light rounded px-1.5 py-0.5 text-text-primary max-w-[16rem]"
+          :value="relayStore.defaultProviderId"
+          title="模型名未命中任何上游时回退到该上游；留空则未命中即 404"
+          @change="setDefaultProvider($event.target.value)"
+        >
+          <option value="">无（未命中即 404）</option>
+          <option
+            v-for="provider in relayStore.providers"
+            :key="provider.id"
+            :value="provider.id"
+            :disabled="provider.enabled === false"
+          >
+            {{ provider.name }}{{ provider.enabled === false ? '（已禁用）' : '' }}
+          </option>
+        </select>
+        <span class="text-[13px] text-text-muted">模型未命中时回退 · 禁用或无 Key 时返回 503</span>
+      </div>
+
+      <!-- 局域网访问开启后的风险提示与可用地址 -->
+      <div
+        v-if="relayStore.lanEnabled"
+        class="flex flex-col gap-1 rounded-card border border-warning/40 bg-warning/10 px-2 py-1.5 text-[13px]"
+      >
+        <div class="text-warning leading-relaxed">
+          局域网访问已开启：同一网络内的其它设备可调用本中转站。请确保已设置访问
+          Key，并只在可信网络中使用；关闭后需重启中转站生效。
+        </div>
+        <div v-if="relayStore.running && !relayStore.lanActive" class="text-text-muted">
+          当前仍在监听本机回环，停止并重新启动中转站后才会对局域网开放。
+        </div>
+        <div v-if="relayStore.lanAddresses.length > 0" class="flex flex-col gap-0.5">
+          <span class="text-text-muted">局域网端点（点击复制）：</span>
+          <button
+            v-for="nic in relayStore.lanAddresses"
+            :key="nic.address"
+            type="button"
+            class="text-left text-text-primary hover:text-accent truncate"
+            :title="`网卡：${nic.name}`"
+            @click="copyLanUrl(nic.address)"
+          >
+            <code class="text-[13px]">http://{{ nic.address }}:{{ relayStore.port }}/v1</code>
+            <span class="text-text-muted"> · {{ nic.name }}</span>
+          </button>
+        </div>
       </div>
 
       <!-- 多客户端 Key：每个工具一把，日志与调用监控按名称归因 -->
@@ -245,28 +302,28 @@
     <!-- 提供商编辑页 -->
     <div class="flex-1 min-h-0 flex flex-col rounded-card border border-border-light bg-surface">
       <div class="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-1.5">
-        <div
-          v-if="editingId && activeProvider?.quota?.enabled"
-          class="text-[13px] text-text-muted leading-relaxed"
-        >
-          <div v-for="item in quotaKeysOf(activeProvider)" :key="item.id">
-            …{{ item.keyTail }}：5h {{ item.used5h }}/{{ item.limit5h || '∞' }}
-            {{ item.metric === 'credit' ? '墨点' : '次' }} · 7d {{ item.usedWeek }}/{{
-              item.limitWeek || '∞'
-            }}
-            <span v-if="item.exhausted" class="text-danger">· 已用尽</span>
-          </div>
-          <div v-if="quotaKeysOf(activeProvider).length === 0">
-            5h ≤ {{ activeProvider.quota.limit5h || '∞' }} · 7d ≤
-            {{ activeProvider.quota.limitWeek || '∞' }}（每 Key 独立）
-          </div>
+        <div class="flex items-center gap-2">
+          <select
+            v-model="form.presetId"
+            class="preset-select select text-xs py-1 w-1/2"
+            @change="applyPreset"
+          >
+            <option value="">自定义</option>
+            <option v-for="preset in RELAY_PRESETS" :key="preset.id" :value="preset.id">
+              {{ preset.name }}
+            </option>
+          </select>
+          <label
+            class="provider-enabled-toggle flex items-center gap-1.5 text-[14px] text-text-muted cursor-pointer select-none flex-shrink-0"
+            :title="form.enabled ? '该提供商已启用，点击停用' : '该提供商已停用，点击启用'"
+          >
+            <input v-model="form.enabled" type="checkbox" class="sr-only peer" />
+            <span
+              class="relative w-7 h-4 rounded-full bg-border-light peer-checked:bg-accent transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:w-3 after:h-3 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:after:translate-x-3"
+            ></span>
+            {{ form.enabled ? '启用' : '停用' }}
+          </label>
         </div>
-        <select v-model="form.presetId" class="select text-xs py-1" @change="applyPreset">
-          <option value="">自定义</option>
-          <option v-for="preset in RELAY_PRESETS" :key="preset.id" :value="preset.id">
-            {{ preset.name }}
-          </option>
-        </select>
         <div class="grid grid-cols-[auto,minmax(0,1fr)] items-start gap-x-2 gap-y-1.5 text-[14px]">
           <span class="text-text-muted pt-2">名称</span>
           <input v-model="form.name" class="input text-xs py-1" placeholder="提供商名称" />
@@ -291,11 +348,21 @@
                 type="button"
                 class="btn-ghost text-[13px] px-1.5 py-0.5"
                 :disabled="keyTesting"
-                title="逐个测试上方所有 Key 能否连通上游 /models"
+                title="逐个测试上方所有 Key：未选模型时只连通 /models，选中模型时对该模型发一次最小对话请求"
                 @click="testAllKeys"
               >
                 {{ keyTesting ? '测通中…' : '一键测通' }}
               </button>
+              <select
+                v-model="testModel"
+                class="select text-[13px] py-0.5 max-w-[180px]"
+                title="测通模型：选中后一键测通对该模型发一次最小对话请求验证真实可调通；留空则只测 /models 连通"
+              >
+                <option value="">默认（/models）</option>
+                <option v-for="name in testModelOptions" :key="name" :value="name">
+                  {{ name }}
+                </option>
+              </select>
             </div>
             <template v-for="(item, index) in form.apiKeyInputs" :key="index">
               <div v-if="showAllKeys || index === 0" class="flex flex-wrap items-center gap-1">
@@ -310,7 +377,7 @@
                   v-if="form.quotaEnabled"
                   v-model="form.apiKeyGroups[index]"
                   class="select text-xs py-1 w-24 flex-shrink-0"
-                  title="把该 Key 加入共享额度组；同组 Key 共用额度池"
+                  title="把该 Key 加入共享账号组；同组 Key 共享真实 429 锁定"
                 >
                   <option value="">未分组</option>
                   <option v-for="group in form.quotaGroups" :key="group" :value="group">
@@ -360,8 +427,8 @@
               class="mt-1 min-w-0 rounded-md border border-border-light bg-surface-alt/60 px-2 py-1.5 space-y-1"
             >
               <div class="flex items-center justify-between text-[13px] text-text-muted">
-                <span>共享额度组</span>
-                <span>{{ form.quotaGroups.length }} 个 · 仅当前提供商内生效</span>
+                <span>共享账号组</span>
+                <span>{{ form.quotaGroups.length }} 个 · 同组共享真实 429 锁定</span>
               </div>
               <div
                 v-for="(group, index) in visibleQuotaGroups"
@@ -526,74 +593,15 @@
           >
             <label
               class="flex items-center gap-1"
-              title="按 5 小时 / 7 天滑动窗口限制用量，用尽后自动切到下一个提供商（同提供商的多把 Key 共享额度）"
+              title="按真实上游响应自动保护：连续真实 429 才锁定，成功即恢复；不预估积分 / 次数 / 墨点"
             >
               <input v-model="form.quotaEnabled" type="checkbox" />
-              额度窗口
+              自动额度保护
             </label>
             <template v-if="form.quotaEnabled">
-              <select
-                v-model="form.quotaMetric"
-                class="select text-xs py-0.5"
-                title="按请求次数，或按积分 / 墨点（由 tokens 估算）"
-              >
-                <option value="request">按次数</option>
-                <option value="credit">按积分 / 墨点</option>
-              </select>
-              <template v-if="form.quotaWindowMode !== 'calendar-month'">
-                <label class="flex items-center gap-1">
-                  5 小时
-                  <input
-                    v-model.number="form.quotaLimit5h"
-                    type="number"
-                    min="0"
-                    class="w-16 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                    title="5 小时窗口上限，0 表示不限"
-                  />
-                </label>
-                <label class="flex items-center gap-1">
-                  7 天
-                  <input
-                    v-model.number="form.quotaLimitWeek"
-                    type="number"
-                    min="0"
-                    class="w-20 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                    title="7 天窗口上限，0 表示不限"
-                  />
-                </label>
-              </template>
-              <label
-                v-else
-                class="flex items-center gap-1"
-                title="自然月额度：每月 1 日清零（端砚墨点口径），用尽后锁定到下月 1 日"
-              >
-                每月
-                <input
-                  v-model.number="form.quotaLimitMonth"
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  class="w-16 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                />
-              </label>
-              <label
-                v-if="form.quotaMetric === 'credit'"
-                class="flex items-center gap-1"
-                title="每百万 tokens 折算的积分（可按模型输出单价保守估算）"
-              >
-                每百万 tokens 记
-                <input
-                  v-model.number="form.quotaCreditsPerMillion"
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  class="w-14 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                />
-                墨点
-              </label>
               <label
                 class="flex items-center gap-1"
-                title="连续多次、且彼此间隔足够的 429 才判定额度耗尽，避免把瞬时限流误判为额度用完"
+                title="连续多次、且彼此间隔足够的真实 429 才判定额度耗尽，避免把瞬时限流误判为额度用完"
               >
                 429 判定
                 <input
@@ -602,7 +610,7 @@
                   min="1"
                   max="10"
                   class="w-10 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                  title="需要累计几次 429 才确认"
+                  title="需要累计几次真实 429 才确认"
                 />
                 次 · 间隔
                 <input
@@ -612,41 +620,6 @@
                   max="60"
                   class="w-12 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
                   title="两次 429 之间至少隔多少分钟才计一次"
-                />
-                分钟
-              </label>
-              <label
-                class="flex items-center gap-1"
-                title="商汤等按模型分别限次的上游：每个模型单独记账、单独锁定"
-              >
-                <input v-model="form.quotaPerModel" type="checkbox" />
-                按模型独立
-              </label>
-              <label
-                class="flex items-center gap-1"
-                title="预留一部分额度给突发与故障转移重试，避免同一时刻把所有 Key 打满"
-              >
-                预留
-                <input
-                  v-model.number="form.quotaReservePercent"
-                  type="number"
-                  min="0"
-                  max="80"
-                  class="w-10 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-                />
-                %
-              </label>
-              <label
-                class="flex items-center gap-1"
-                title="锁定到期后先小流量探测，成功后再逐步恢复到全速，避免解锁即再次撞墙"
-              >
-                渐进
-                <input
-                  v-model.number="form.quotaWarmupMinutes"
-                  type="number"
-                  min="0"
-                  max="60"
-                  class="w-10 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
                 />
                 分钟
               </label>
@@ -678,46 +651,65 @@
                 />
                 次
               </label>
+              <label
+                class="flex items-center gap-1"
+                title="锁定到期后先小流量探测，成功后再逐步恢复到全速，避免解锁即再次撞墙"
+              >
+                渐进
+                <input
+                  v-model.number="form.quotaWarmupMinutes"
+                  type="number"
+                  min="0"
+                  max="60"
+                  class="w-10 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
+                />
+                分钟
+              </label>
+              <button
+                v-if="editingId && quotaKeysOf(activeProvider).some((item) => item.locked)"
+                type="button"
+                class="btn-ghost text-[13px] px-1.5 py-0.5 text-danger hover:bg-danger/10"
+                title="清除该提供商全部 Key 的真实 429 锁定，立即重新探测上游"
+                @click="unlockQuota(activeProvider)"
+              >
+                解除额度锁定
+              </button>
             </template>
-          </div>
-        </div>
-        <div
-          v-if="form.quotaEnabled && form.quotaPerModel"
-          class="rounded-md border border-border-light bg-surface-alt/60 px-2 py-1.5 flex flex-col gap-1"
-        >
-          <div class="text-[13px] text-text-muted">按模型上限（留 0 表示沿用上面的默认值）</div>
-          <div
-            v-for="model in quotaModelList"
-            :key="model"
-            class="flex items-center gap-1.5 text-[13px] text-text-muted"
-          >
-            <span class="min-w-0 flex-1 truncate" :title="model">{{ model }}</span>
-            <input
-              v-model.number="form.quotaModelLimits[model].limit5h"
-              type="number"
-              min="0"
-              class="w-16 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-              title="该模型的 5 小时上限"
-            />
-            <input
-              v-model.number="form.quotaModelLimits[model].limitWeek"
-              type="number"
-              min="0"
-              class="w-20 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-              title="该模型的 7 天上限"
-            />
-            <input
-              v-if="form.quotaMetric === 'credit'"
-              v-model.number="form.quotaModelRates[model]"
-              type="number"
-              min="0"
-              step="0.1"
-              class="w-16 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
-              title="该模型每百万 tokens 折算的积分；0 表示沿用全局值"
-            />
-          </div>
-          <div v-if="quotaModelList.length === 0" class="text-[13px] text-text-muted">
-            先在上方填写模型名
+            <span v-if="form.quotaEnabled" class="text-[13px] text-text-muted">
+              普通连续 429：5 分钟探测 → 5 小时 → 7 天；明确额度耗尽直接锁 5 小时，成功即恢复
+            </span>
+            <label
+              class="flex items-center gap-1"
+              title="周期性对每把 Key 发一次最小化真实调用（max_tokens=1），自动发现额度恢复 / 耗尽与无效 Key；探测会消耗少量积分"
+            >
+              <input v-model="form.probeEnabled" type="checkbox" />
+              自动探测每把 Key
+            </label>
+            <template v-if="form.probeEnabled">
+              <label class="flex items-center gap-1" title="每轮探测的间隔（分钟）">
+                间隔
+                <input
+                  v-model.number="form.probeInterval"
+                  type="number"
+                  min="1"
+                  max="720"
+                  class="w-14 bg-surface-alt border border-border-light rounded px-1 py-1 text-center text-text-primary"
+                />
+                分钟
+              </label>
+              <label class="flex items-center gap-1" title="探测用的模型 ID；建议选最便宜的一个">
+                探测模型
+                <input
+                  v-model="form.probeModel"
+                  type="text"
+                  placeholder="留空=列表第一个"
+                  class="w-44 bg-surface-alt border border-border-light rounded px-1.5 py-1 text-text-primary"
+                />
+              </label>
+            </template>
+            <span v-if="form.probeEnabled" class="text-[13px] text-text-muted">
+              官方无余额查询 API：额度状态来自自动探测 + 真实 429 记账；探测本身消耗少量积分
+            </span>
           </div>
         </div>
         <div v-if="presetNote" class="text-[14px] text-text-muted">{{ presetNote }}</div>
@@ -891,28 +883,63 @@
               </span>
 
               <span class="text-text-muted pt-0.5">额度</span>
-              <div class="text-text-primary">
+              <div class="text-text-primary min-w-0">
                 <template v-if="activeProvider.quota?.enabled">
-                  <div
-                    v-for="item in quotaKeysOf(activeProvider)"
-                    :key="item.id"
-                    class="text-[13px]"
-                  >
-                    …{{ item.keyTail }}：5h {{ item.used5h }}/{{ item.limit5h || '∞' }}
-                    {{ item.metric === 'credit' ? '墨点' : '次' }} · 7d {{ item.usedWeek }}/{{
-                      item.limitWeek || '∞'
-                    }}
-                    <span v-if="item.exhausted" class="text-danger">· 已用尽</span>
+                  <div class="flex flex-wrap items-center gap-1">
+                    <span class="text-[13px] break-words">{{ quotaSummary(activeProvider) }}</span>
+                    <button
+                      v-if="quotaKeysOf(activeProvider).length > 0"
+                      type="button"
+                      class="btn-ghost text-[13px] px-1 py-0.5 flex-shrink-0"
+                      @click="showQuotaKeyDetails = !showQuotaKeyDetails"
+                    >
+                      {{ showQuotaKeyDetails ? '收起明细' : '展开明细' }}
+                    </button>
                   </div>
-                  <div
-                    v-if="quotaKeysOf(activeProvider).length === 0"
-                    class="text-[13px] text-text-muted"
-                  >
-                    5h ≤ {{ activeProvider.quota.limit5h || '∞' }} · 7d ≤
-                    {{ activeProvider.quota.limitWeek || '∞' }}（每 Key 独立）
+                  <div v-if="showQuotaKeyDetails" class="mt-0.5 space-y-0.5">
+                    <div
+                      v-for="item in quotaKeysOf(activeProvider)"
+                      :key="item.id"
+                      class="text-[13px]"
+                    >
+                      …{{ item.keyTail }}：{{ quotaItemLabel(item) }}
+                    </div>
                   </div>
                 </template>
                 <span v-else class="text-text-muted">未启用</span>
+              </div>
+
+              <span class="text-text-muted pt-0.5">Key 探测</span>
+              <div class="text-text-primary min-w-0">
+                <div class="flex flex-wrap items-center gap-1">
+                  <span class="text-[13px] break-words">{{ probeSummary(activeProvider) }}</span>
+                  <button
+                    type="button"
+                    class="btn-ghost text-[13px] px-1 py-0.5 flex-shrink-0"
+                    :disabled="relayStore.keyProbing"
+                    title="立即对每把 Key 发一次最小化调用，刷新额度 / 有效性状态（消耗少量积分）"
+                    @click="probeProviderKeys(activeProvider)"
+                  >
+                    {{ relayStore.keyProbing ? '探测中…' : '立即探测' }}
+                  </button>
+                  <button
+                    v-if="probeRowsOf(activeProvider).length > 0"
+                    type="button"
+                    class="btn-ghost text-[13px] px-1 py-0.5 flex-shrink-0"
+                    @click="showProbeKeyDetails = !showProbeKeyDetails"
+                  >
+                    {{ showProbeKeyDetails ? '收起明细' : '展开明细' }}
+                  </button>
+                </div>
+                <div v-if="showProbeKeyDetails" class="mt-0.5 space-y-0.5">
+                  <div
+                    v-for="row in probeRowsOf(activeProvider)"
+                    :key="row.keyTail"
+                    class="text-[13px]"
+                  >
+                    …{{ row.keyTail }}：{{ probeRowLabel(row) }}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1003,7 +1030,7 @@
 </template>
 
 <script>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
 import { useToastStore } from '../stores/toastStore.js'
 import { RELAY_PRESETS, findPreset } from '../data/relayPresets.js'
@@ -1019,6 +1046,8 @@ export default {
       presetId: '',
       name: '',
       baseUrl: '',
+      // 该提供商是否参与路由；停用后仍保留配置，只是不再被选中
+      enabled: true,
       // 一个输入框只放一个值：Key / 模型（含别名）都可以按需追加多行
       apiKeyInputs: [''],
       // 与 apiKeyInputs 一一对应：每把 Key 的共享额度组（留空表示未分组）
@@ -1033,22 +1062,16 @@ export default {
       strategy: '',
       queueTimeoutMs: 0,
       quotaEnabled: false,
-      quotaMetric: 'request',
-      quotaWindowMode: 'rolling',
-      quotaLimitMonth: 0,
-      quotaLimit5h: 0,
-      quotaLimitWeek: 0,
-      quotaCreditsPerMillion: 4,
       quotaStrikes: 3,
       quotaInterval: 1,
-      quotaPerModel: false,
       quotaGroup: '',
-      quotaReservePercent: 10,
       quotaStrikesSpan: 9,
       quotaBurstStrikes: 0,
       quotaWarmupMinutes: 5,
-      quotaModelLimits: {},
-      quotaModelRates: {},
+      // 自动探测每把 Key：官方无余额查询 API，用最小化真实调用推断额度与有效性
+      probeEnabled: false,
+      probeInterval: 30,
+      probeModel: '',
     })
 
     const presetNote = computed(() => findPreset(form.presetId)?.note || '')
@@ -1056,6 +1079,10 @@ export default {
 
     // 共享组管理：新建组名输入
     const newQuotaGroupName = ref('')
+    // 逐 Key 额度明细默认折叠，避免一长串 Key 淹没编辑表单
+    const showQuotaKeyDetails = ref(false)
+    // 逐 Key 探测明细同样默认折叠
+    const showProbeKeyDetails = ref(false)
     // 组列表默认只展开第一组；新建组时用按钮唤出输入行，避免常驻空输入框
     const showAllQuotaGroups = ref(false)
     const addingQuotaGroup = ref(false)
@@ -1116,43 +1143,20 @@ export default {
       if (form.quotaGroups.length <= 1) showAllQuotaGroups.value = false
     }
 
-    // 按模型独立额度：以表单里的模型行为准，自动补齐缺失的限额行
-    const quotaModelNames = computed(() =>
-      form.modelInputs.map((item) => String(item || '').trim()).filter(Boolean),
-    )
-    // 模板只渲染已经补齐限额的模型，避免 v-model 读写到 undefined
-    const quotaModelList = computed(() =>
-      quotaModelNames.value.filter((model) => form.quotaModelLimits[model]),
-    )
-    function ensureQuotaModelLimits() {
-      const next = {}
-      for (const model of quotaModelNames.value) {
-        const current = form.quotaModelLimits?.[model]
-        next[model] = current
-          ? {
-              limit5h: Number(current.limit5h) || 0,
-              limitWeek: Number(current.limitWeek) || 0,
-            }
-          : {
-              limit5h: Number(form.quotaLimit5h) || 0,
-              limitWeek: Number(form.quotaLimitWeek) || 0,
-            }
-      }
-      form.quotaModelLimits = next
-      // 积分模式下允许每个模型有不同的 tokens→积分换算率
-      const nextRates = {}
-      for (const model of quotaModelNames.value) {
-        nextRates[model] = Number(form.quotaModelRates?.[model]) || 0
-      }
-      form.quotaModelRates = nextRates
-    }
-
     // API Key 区：一键明文 / 一键测通（结果按输入行保存）
     const showApiKeys = ref(false)
     // 默认只展开第一把 Key，其余折叠；点「显示更多」再展开
     const showAllKeys = ref(false)
     const keyTesting = ref(false)
     const keyTests = ref([])
+    // 一键测通的运行令牌：切换提供商 / 重新进入编辑后，迟到结果直接丢弃
+    let keyTestRun = 0
+    // 一键测通的模型选择：留空走 /models 连通测试，选中后对该模型发最小对话请求
+    const testModel = ref('')
+    // 下拉选项 = 表单里已填的模型名（去空、去重）
+    const testModelOptions = computed(() => [
+      ...new Set(form.modelInputs.map((item) => String(item).trim()).filter(Boolean)),
+    ])
 
     const addingProvider = ref(false)
     // 删除模式：开启后每个提供商选项卡显示 × 图标
@@ -1219,39 +1223,36 @@ export default {
       form.presetId = ''
       form.name = ''
       form.baseUrl = ''
+      form.enabled = true
       form.apiKeyInputs = ['']
       form.apiKeyGroups = ['']
       form.quotaGroups = []
       newQuotaGroupName.value = ''
       showAllQuotaGroups.value = false
       addingQuotaGroup.value = false
+      showQuotaKeyDetails.value = false
       form.modelInputs = ['']
       form.modelAliasInputs = ['']
       showApiKeys.value = false
       showAllKeys.value = false
       keyTesting.value = false
+      keyTestRun += 1
       keyTests.value = []
       form.maxConcurrency = 4
       form.rpmLimit = 0
       form.strategy = ''
       form.queueTimeoutMs = 0
       form.quotaEnabled = false
-      form.quotaMetric = 'request'
-      form.quotaWindowMode = 'rolling'
-      form.quotaLimitMonth = 0
-      form.quotaLimit5h = 0
-      form.quotaLimitWeek = 0
-      form.quotaCreditsPerMillion = 4
       form.quotaStrikes = 3
       form.quotaInterval = 1
-      form.quotaPerModel = false
       form.quotaGroup = ''
-      form.quotaReservePercent = 10
       form.quotaStrikesSpan = 9
       form.quotaBurstStrikes = 0
       form.quotaWarmupMinutes = 5
-      form.quotaModelLimits = {}
-      form.quotaModelRates = {}
+      form.probeEnabled = false
+      form.probeInterval = 30
+      form.probeModel = ''
+      showProbeKeyDetails.value = false
       editingId.value = null
       autoSaveState.value = 'idle'
       nextTick(() => {
@@ -1275,6 +1276,7 @@ export default {
       form.presetId = provider.presetId || ''
       form.name = provider.name || ''
       form.baseUrl = provider.baseUrl || ''
+      form.enabled = provider.enabled !== false
       form.apiKeyInputs = [...keys]
       const keyGroups = provider.quota?.keyGroups || {}
       const defaultGroup = provider.quota?.group || ''
@@ -1295,6 +1297,9 @@ export default {
       showAllQuotaGroups.value = false
       addingQuotaGroup.value = false
       newQuotaGroupName.value = ''
+      showQuotaKeyDetails.value = false
+      keyTestRun += 1
+      keyTesting.value = false
       keyTests.value = keys.map(() => null)
       form.modelInputs = [...models]
       // 别名按上游模型归位：同一模型有多个客户端别名时用逗号合并到该行
@@ -1310,34 +1315,19 @@ export default {
       form.queueTimeoutMs = Number(provider.queueTimeoutMs) || 0
       const quota = provider.quota || {}
       form.quotaEnabled = quota.enabled === true
-      form.quotaMetric = quota.metric === 'credit' ? 'credit' : 'request'
-      form.quotaWindowMode = quota.windowMode === 'calendar-month' ? 'calendar-month' : 'rolling'
-      form.quotaLimitMonth = Number(quota.limitMonth) || 0
-      form.quotaLimit5h = Number(quota.limit5h) || 0
-      form.quotaLimitWeek = Number(quota.limitWeek) || 0
-      form.quotaCreditsPerMillion = Number(quota.creditsPerMillionTokens) || 4
       form.quotaStrikes = Number(quota.confirmStrikes) > 0 ? Number(quota.confirmStrikes) : 3
       form.quotaInterval =
         Number(quota.confirmIntervalMinutes) > 0 ? Number(quota.confirmIntervalMinutes) : 1
-      form.quotaPerModel = quota.perModel === true
       form.quotaGroup = quota.group || ''
-      form.quotaReservePercent = Math.round((Number(quota.reserveRatio) || 0) * 100)
       form.quotaStrikesSpan =
         Number(quota.confirmSpanMinutes) > 0 ? Number(quota.confirmSpanMinutes) : 9
       form.quotaBurstStrikes = Number(quota.burstStrikes) || 0
       form.quotaWarmupMinutes = Number(quota.warmupMinutes) > 0 ? Number(quota.warmupMinutes) : 5
-      form.quotaModelLimits = {}
-      form.quotaModelRates = {}
-      for (const [model, value] of Object.entries(quota.modelLimits || {})) {
-        form.quotaModelLimits[model] = {
-          limit5h: Number(value?.limit5h) || 0,
-          limitWeek: Number(value?.limitWeek) || 0,
-        }
-      }
-      for (const [model, value] of Object.entries(quota.modelRates || {})) {
-        form.quotaModelRates[model] = Number(value) || 0
-      }
-      ensureQuotaModelLimits()
+      const probe = provider.autoProbe || {}
+      form.probeEnabled = probe.enabled === true
+      form.probeInterval = Number(probe.intervalMinutes) > 0 ? Number(probe.intervalMinutes) : 30
+      form.probeModel = typeof probe.model === 'string' ? probe.model : ''
+      showProbeKeyDetails.value = false
       editingId.value = provider.id
       modelPicker.visible = false
       autoSaveState.value = 'idle'
@@ -1385,6 +1375,7 @@ export default {
       return {
         name: form.name,
         baseUrl: form.baseUrl,
+        enabled: form.enabled !== false,
         apiKeys: form.apiKeyInputs.map((item) => item.trim()).filter(Boolean),
         models,
         modelAliases,
@@ -1395,25 +1386,21 @@ export default {
         queueTimeoutMs: Number(form.queueTimeoutMs) || 0,
         quota: {
           enabled: form.quotaEnabled,
-          metric: form.quotaMetric,
-          windowMode: form.quotaWindowMode === 'calendar-month' ? 'calendar-month' : 'rolling',
-          limitMonth: Number(form.quotaLimitMonth) || 0,
-          limit5h: Number(form.quotaLimit5h) || 0,
-          limitWeek: Number(form.quotaLimitWeek) || 0,
-          creditsPerMillionTokens: Number(form.quotaCreditsPerMillion) || 0,
           confirmStrikes: Number(form.quotaStrikes) || 0,
           confirmIntervalMinutes: Number(form.quotaInterval) || 0,
           confirmSpanMinutes: Number(form.quotaStrikesSpan) || 0,
           burstStrikes: Number(form.quotaBurstStrikes) || 0,
-          reserveRatio: Math.min(0.9, Math.max(0, Number(form.quotaReservePercent) || 0) / 100),
+          burstWindowMinutes: 10,
           warmupMinutes: Number(form.quotaWarmupMinutes) || 0,
-          perModel: form.quotaPerModel,
           // 默认组仅用于老配置回填；新保存完全由每把 Key 的归组决定
           group: '',
           groups: quotaGroups,
           keyGroups,
-          modelLimits: form.quotaPerModel ? { ...form.quotaModelLimits } : {},
-          modelRates: form.quotaPerModel ? { ...form.quotaModelRates } : {},
+        },
+        autoProbe: {
+          enabled: form.probeEnabled,
+          intervalMinutes: Number(form.probeInterval) || 0,
+          model: form.probeModel.trim(),
         },
       }
     }
@@ -1442,26 +1429,24 @@ export default {
       () => [
         form.name,
         form.baseUrl,
+        form.enabled,
         form.apiKeyInputs.join('\u0000'),
+        form.apiKeyGroups.join('\u0000'),
+        form.quotaGroups.join('\u0000'),
         form.modelInputs.join('\u0000'),
         form.modelAliasInputs.join('\u0000'),
         form.maxConcurrency,
         form.rpmLimit,
         form.quotaEnabled,
-        form.quotaMetric,
-        form.quotaLimit5h,
-        form.quotaLimitWeek,
-        form.quotaCreditsPerMillion,
         form.quotaStrikes,
         form.quotaInterval,
-        form.quotaPerModel,
         form.quotaGroup,
-        form.quotaReservePercent,
         form.quotaStrikesSpan,
         form.quotaBurstStrikes,
         form.quotaWarmupMinutes,
-        JSON.stringify(form.quotaModelLimits),
-        JSON.stringify(form.quotaModelRates),
+        form.probeEnabled,
+        form.probeInterval,
+        form.probeModel,
       ],
       () => {
         if (!editingId.value || suppressAutoSave) return
@@ -1474,12 +1459,11 @@ export default {
       },
     )
 
-    watch(
-      () => [form.quotaPerModel, form.modelInputs.join('\u0000')],
-      () => {
-        ensureQuotaModelLimits()
-      },
-    )
+    // 切换页签会卸载组件：把还没到时间的自动保存立即写出，避免再次进入时读到旧数据
+    onBeforeUnmount(() => {
+      keyTestRun += 1
+      void flushAutoSave()
+    })
 
     // 选中选项卡：先保存待写入的修改，再加载该提供商的编辑页
     const selectProvider = async (provider) => {
@@ -1533,7 +1517,8 @@ export default {
       }
     }
 
-    // 一键测通：每个输入框单独请求一次上游 /models，互不掩盖失败
+    // 一键测通：每个输入框单独请求一次上游，互不掩盖失败；
+    // 未选模型时只连通 /models，选中模型时对该模型发一次最小对话请求
     const testAllKeys = async () => {
       const baseUrl = form.baseUrl.trim()
       if (!baseUrl) {
@@ -1545,34 +1530,44 @@ export default {
         toastStore.addToast('请先填写至少一个 API Key', 'warning')
         return
       }
+      const model = testModel.value.trim()
 
       keyTesting.value = true
       keyTests.value = keys.map(() => null)
+      // 切换提供商 / 重新进入编辑会重置表单；用运行令牌丢弃上一轮的迟到结果
+      const run = (keyTestRun += 1)
+      const providerId = editingId.value
+      const stillCurrent = () => run === keyTestRun && providerId === editingId.value
       try {
         await Promise.all(
           keys.map(async (key, index) => {
             if (!key) {
-              keyTests.value[index] = { status: 'empty' }
+              if (stillCurrent()) keyTests.value[index] = { status: 'empty' }
               return
             }
             try {
-              const result = await relayStore.testKey(baseUrl, key)
+              const result = await relayStore.testKey(baseUrl, key, model)
+              if (!stillCurrent()) return
               keyTests.value[index] = result?.ok
-                ? { status: 'ok', ms: result.ms, models: result.models }
-                : { status: 'fail', ms: result?.ms, error: result?.error || '测通失败' }
+                ? { status: 'ok', ms: result.ms, models: result.models, model }
+                : { status: 'fail', ms: result?.ms, error: result?.error || '测通失败', model }
             } catch (error) {
-              keyTests.value[index] = { status: 'fail', error: error.message || '测通失败' }
+              if (!stillCurrent()) return
+              keyTests.value[index] = { status: 'fail', error: error.message || '测通失败', model }
             }
           }),
         )
+        if (!stillCurrent()) return
         const filled = keys.filter(Boolean).length
         const passed = keyTests.value.filter((item) => item?.status === 'ok').length
         toastStore.addToast(
-          `测通完成：${passed}/${filled} 把 Key 可用`,
+          model
+            ? `测通完成：${passed}/${filled} 把 Key 可调通模型 ${model}`
+            : `测通完成：${passed}/${filled} 把 Key 可用`,
           passed === filled ? 'success' : 'warning',
         )
       } finally {
-        keyTesting.value = false
+        if (run === keyTestRun) keyTesting.value = false
       }
     }
 
@@ -1591,9 +1586,13 @@ export default {
 
     const keyTestTitle = (result) => {
       if (result?.status === 'ok') {
-        return `可用 · 返回 ${result.models} 个模型 · 耗时 ${result.ms}ms`
+        const detail = result.model ? `模型 ${result.model} 可调通` : `返回 ${result.models} 个模型`
+        return `可用 · ${detail} · 耗时 ${result.ms}ms`
       }
-      if (result?.status === 'fail') return result.error || '测通失败'
+      if (result?.status === 'fail') {
+        const prefix = result.model ? `模型 ${result.model}：` : ''
+        return `${prefix}${result.error || '测通失败'}`
+      }
       return '这一行还没有填写 Key'
     }
 
@@ -1624,34 +1623,18 @@ export default {
       form.queueTimeoutMs = Number(preset.queueTimeoutMs) || 0
       const quota = preset.quota
       form.quotaEnabled = quota?.enabled === true
-      form.quotaMetric = quota?.metric === 'credit' ? 'credit' : 'request'
-      form.quotaWindowMode = quota?.windowMode === 'calendar-month' ? 'calendar-month' : 'rolling'
-      form.quotaLimitMonth = Number(quota?.limitMonth) || 0
-      form.quotaLimit5h = Number(quota?.limit5h) || 0
-      form.quotaLimitWeek = Number(quota?.limitWeek) || 0
-      form.quotaCreditsPerMillion = Number(quota?.creditsPerMillionTokens) || 4
       form.quotaStrikes = Number(quota?.confirmStrikes) > 0 ? Number(quota?.confirmStrikes) : 3
       form.quotaInterval =
         Number(quota?.confirmIntervalMinutes) > 0 ? Number(quota?.confirmIntervalMinutes) : 1
-      form.quotaPerModel = quota?.perModel === true
       form.quotaGroup = quota?.group || ''
-      form.quotaReservePercent = Math.round((Number(quota?.reserveRatio) || 0) * 100)
       form.quotaStrikesSpan =
         Number(quota?.confirmSpanMinutes) > 0 ? Number(quota?.confirmSpanMinutes) : 9
       form.quotaBurstStrikes = Number(quota?.burstStrikes) || 0
       form.quotaWarmupMinutes = Number(quota?.warmupMinutes) > 0 ? Number(quota?.warmupMinutes) : 5
-      form.quotaModelLimits = {}
-      form.quotaModelRates = {}
-      for (const [model, value] of Object.entries(quota?.modelLimits || {})) {
-        form.quotaModelLimits[model] = {
-          limit5h: Number(value?.limit5h) || 0,
-          limitWeek: Number(value?.limitWeek) || 0,
-        }
-      }
-      for (const [model, value] of Object.entries(quota?.modelRates || {})) {
-        form.quotaModelRates[model] = Number(value) || 0
-      }
-      ensureQuotaModelLimits()
+      const probe = preset.autoProbe
+      form.probeEnabled = probe?.enabled === true
+      form.probeInterval = Number(probe?.intervalMinutes) > 0 ? Number(probe?.intervalMinutes) : 30
+      form.probeModel = typeof probe?.model === 'string' ? probe.model : ''
     }
 
     const submitProvider = async () => {
@@ -1716,6 +1699,27 @@ export default {
       toastStore.addToast(enabled ? '已开启会话粘性' : '已关闭会话粘性', 'info')
     }
 
+    const setDefaultProvider = async (id) => {
+      await relayStore.setDefaultProvider(id)
+    }
+
+    const setLanEnabled = async (event) => {
+      await relayStore.setLanEnabled(event.target.checked)
+      // 无访问 Key 时 store 会拒绝开启，状态不变则 Vue 不回填 DOM，
+      // 这里手动把勾选态同步回真实状态，避免「看起来开了其实没开」
+      event.target.checked = relayStore.lanEnabled
+    }
+
+    const copyLanUrl = async (address) => {
+      const url = `http://${address}:${relayStore.port}/v1`
+      try {
+        await navigator.clipboard.writeText(url)
+        toastStore.addToast('已复制局域网端点', 'success')
+      } catch {
+        toastStore.addToast('复制失败，请手动选择', 'error')
+      }
+    }
+
     const addClientKey = async (label) => {
       await relayStore.addClientKey(label)
     }
@@ -1776,22 +1780,103 @@ export default {
         ? (relayStore.status?.quota || []).filter((item) => item.providerId === provider.id)
         : []
 
+    const quotaItemLabel = (item) => {
+      const stateText =
+        item.state === 'week'
+          ? '7 天锁定'
+          : item.state === '5h'
+            ? '5 小时锁定'
+            : item.state === 'probe'
+              ? '5 分钟探测'
+              : item.state === 'warmup'
+                ? '恢复中'
+                : '正常'
+      const minutes = Math.max(1, Math.round((Number(item.retryAfter) || 0) / 60))
+      const recent = ` · 最近 5h ${Number(item.calls5h) || 0} 次 / 成功 ${Number(item.success5h) || 0}`
+      const last = item.lastStatus ? ` · 最近响应 ${item.lastStatus}` : ''
+      if (item.locked) return `${stateText} · ${minutes} 分钟后重试${recent}${last}`
+      if (item.state === 'warmup') {
+        return `恢复中（${item.warmup === 'probing' ? '探测' : '放量'}）${recent}${last}`
+      }
+      return `正常${recent}${last}`
+    }
+
+    // 详情区只显示一行汇总；完整明细点「展开明细」再看
+    const quotaSummary = (provider) => {
+      const quota = provider?.quota
+      if (!quota?.enabled) return '未启用'
+      const keys = quotaKeysOf(provider)
+      if (keys.length === 0) return '按真实响应自动保护 · 5 分钟探测 → 5 小时 → 7 天'
+      const keyCount = new Set(keys.map((item) => item.keyTail)).size
+      const limited = keys.filter((item) => item.locked).length
+      const calls = keys.reduce((sum, item) => sum + (Number(item.calls5h) || 0), 0)
+      return `自动保护 · ${keyCount} 把 Key · ${limited > 0 ? `${limited} 项受限` : '全部正常'} · 最近 5h ${calls} 次`
+    }
+
+    // 每 Key 探测快照：主进程周期 / 手动探测的结果（status.keyProbe）
+    const probeRowsOf = (provider) =>
+      (relayStore.status?.keyProbe || []).find((item) => item.providerId === provider.id)?.keys ||
+      []
+
+    const probeSummary = (provider) => {
+      const entry = (relayStore.status?.keyProbe || []).find(
+        (item) => item.providerId === provider.id,
+      )
+      if (!entry) return '尚未探测'
+      const total = entry.keys.length
+      if (total === 0) return '没有可探测的 Key'
+      const ok = entry.keys.filter((row) => row.result === 'ok' && !row.locked).length
+      const locked = entry.keys.filter((row) => row.locked).length
+      const invalid = entry.keys.filter((row) => row.result === 'invalid').length
+      const limited = entry.keys.filter(
+        (row) => row.result === 'rate_limited' && !row.locked,
+      ).length
+      const parts = [`${ok}/${total} 可用`]
+      if (locked > 0) parts.push(`${locked} 锁定`)
+      if (invalid > 0) parts.push(`${invalid} 无效`)
+      if (limited > 0) parts.push(`${limited} 速率受限`)
+      const schedule = entry.probeEnabled
+        ? ` · 每 ${entry.intervalMinutes} 分钟自动探测`
+        : ' · 自动探测未开启'
+      return parts.join('，') + schedule
+    }
+
+    const probeRowLabel = (row) => {
+      const time = row.lastProbeAt
+        ? new Date(row.lastProbeAt).toLocaleTimeString('zh-CN', { hour12: false })
+        : ''
+      const suffix = time ? ` · ${time}` : ''
+      if (row.result === 'invalid') {
+        return `Key 无效（HTTP ${row.status}，检查 Key 是否被注销）${suffix}`
+      }
+      if (row.locked) {
+        const minutes = Math.max(1, Math.ceil((Number(row.lockRetryAfter) || 0) / 60))
+        return `额度锁定 · ${minutes} 分钟后重试${suffix}`
+      }
+      if (row.result === 'rate_limited') return `429 速率受限（待连续确认）${suffix}`
+      if (row.result === 'ok') return `可用 · ${row.latencyMs} ms${suffix}`
+      if (row.result === 'error') {
+        return `探测失败${row.message ? `：${row.message}` : ''}${suffix}`
+      }
+      return '尚未探测'
+    }
+
+    const probeProviderKeys = (provider) => relayStore.probeNow(provider.id)
+
     const quotaLabel = (provider) => {
       const quota = provider.quota
       if (!quota?.enabled) return ''
-      const unit = quota.metric === 'credit' ? '墨点' : '次'
-      const scope = quota.perModel ? '按模型' : '每 Key 独立'
       const groups = [
         ...new Set([quota.group, ...Object.values(quota.keyGroups || {})].filter(Boolean)),
       ]
-      const group = groups.length > 0 ? ` · 共享组 ${groups.length} 个` : ''
+      const group = groups.length > 0 ? ` · 共享账号组 ${groups.length} 个` : ''
       const keys = quotaKeysOf(provider)
       if (keys.length > 0) {
-        const usable = keys.filter((item) => !item.exhausted).length
-        const maxUsed = Math.max(...keys.map((item) => Number(item.used5h) || 0))
-        return ` · ${scope} · 水位 ${usable}/${keys.length} · 5h 最高 ${maxUsed}${group}`
+        const limited = keys.filter((item) => item.locked).length
+        const calls = keys.reduce((sum, item) => sum + (Number(item.calls5h) || 0), 0)
+        return ` · 自动保护 · ${limited > 0 ? `${limited} 项受限` : '全部正常'} · 最近 5h ${calls} 次${group}`
       }
-      return ` · ${scope} · 5h≤${quota.limit5h || '∞'} ${unit} / 7d≤${quota.limitWeek || '∞'}${group}`
+      return ` · 真实响应自动保护${group}`
     }
 
     const limitLabel = (provider) => {
@@ -1812,27 +1897,36 @@ export default {
         ]
         lines.push(
           '',
-          `${quota.perModel ? '按模型独立额度' : '每把 Key 独立额度'}${
-            groups.length ? ` · 共享组 ${groups.join(' / ')}` : ''
+          `按真实响应自动保护：5 分钟探测 → 5 小时 → 7 天${
+            groups.length ? ` · 共享账号组 ${groups.join(' / ')}` : ''
           }`,
         )
       }
       const keys = quotaKeysOf(provider)
       if (keys.length > 0) {
-        lines.push('', '按 Key / 模型用量：')
+        lines.push('', '按 Key / 模型的真实调用：')
         for (const item of keys.slice(0, 20)) {
-          const unit = item.metric === 'credit' ? '墨点' : '次'
           const model = item.model ? ` [${item.model}]` : ''
           const group = item.keyGroup ? ` · 组 ${item.keyGroup}` : ''
           const weight = Number.isFinite(item.weight) ? ` · 权重 ${item.weight}` : ''
           const warm = item.warmup
             ? ` · ${item.warmup === 'probing' ? '半开探测' : '渐进恢复'}`
             : ''
-          const status = item.exhausted
-            ? ` · ${item.locked ? '429 确认额度耗尽' : '额度已用尽'}（${item.retryAfter}s 后恢复）`
-            : ''
+          const state =
+            item.state === 'week'
+              ? '7 天锁定'
+              : item.state === '5h'
+                ? '5 小时锁定'
+                : item.state === 'probe'
+                  ? '5 分钟探测'
+                  : item.state === 'warmup'
+                    ? '恢复中'
+                    : '正常'
+          const status = item.locked ? ` · ${state}（${item.retryAfter}s 后探测）` : ` · ${state}`
           lines.push(
-            `…${item.keyTail}${model}: 5h ${item.used5h}/${item.limit5h || '∞'} ${unit}${group}${weight}${warm}${status}`,
+            `…${item.keyTail}${model}: 最近 5h ${Number(item.calls5h) || 0} 次 / 成功 ${
+              Number(item.success5h) || 0
+            } / 429 ${Number(item.rateLimited5h) || 0}${group}${weight}${warm}${status}`,
           )
         }
         if (keys.length > 20) lines.push(`…… 其余 ${keys.length - 20} 行已省略`)
@@ -1846,6 +1940,12 @@ export default {
       const api = window.electronAPI
       if (api?.openExternal) api.openExternal(url)
       else window.open(url, '_blank', 'noopener')
+    }
+
+    // 429 误判/额度已恢复时手动解锁：只清锁定，不抹掉用量记账
+    const unlockQuota = async (provider) => {
+      if (!provider) return
+      await relayStore.unlockQuota(provider.id)
     }
 
     onMounted(async () => {
@@ -1874,7 +1974,14 @@ export default {
       aliasEntries,
       copyProviderUrl,
       quotaKeysOf,
-      quotaModelList,
+      quotaSummary,
+      quotaItemLabel,
+      showQuotaKeyDetails,
+      probeRowsOf,
+      probeSummary,
+      probeRowLabel,
+      probeProviderKeys,
+      showProbeKeyDetails,
       newQuotaGroupName,
       showAllQuotaGroups,
       addingQuotaGroup,
@@ -1890,6 +1997,8 @@ export default {
       showAllKeys,
       keyTesting,
       keyTests,
+      testModel,
+      testModelOptions,
       onApiKeyInput,
       testAllKeys,
       keyTestText,
@@ -1917,6 +2026,9 @@ export default {
       applyCacheTtl,
       setAutoStart,
       setSticky,
+      setDefaultProvider,
+      setLanEnabled,
+      copyLanUrl,
       addClientKey,
       renameClientKey,
       removeClientKey,
@@ -1927,6 +2039,7 @@ export default {
       applyPort,
       copyBaseUrl,
       openDocs,
+      unlockQuota,
       limitLabel,
       limitTitle,
     }

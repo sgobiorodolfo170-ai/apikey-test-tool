@@ -8,7 +8,7 @@
           · 缓存节省 {{ formatTokenAmount(cachedSummary.total) }}（{{ cachedSummary.calls }}
           次命中）
         </template>
-        · 每 2 秒刷新
+        · 每 5 秒刷新
       </span>
       <button type="button" class="btn-ghost text-xs px-2 py-0.5" @click="refresh">刷新</button>
       <span v-if="cacheStats.hasData" class="basis-full text-[13px] text-text-muted">
@@ -66,6 +66,7 @@
                 <th class="px-2 py-1.5 font-medium whitespace-nowrap">输入</th>
                 <th class="px-2 py-1.5 font-medium whitespace-nowrap">输出</th>
                 <th class="px-2 py-1.5 font-medium whitespace-nowrap">合计</th>
+                <th class="px-2 py-1.5 font-medium whitespace-nowrap">TTFT / 速度</th>
                 <th class="px-2 py-1.5 font-medium whitespace-nowrap">最近</th>
               </tr>
             </thead>
@@ -95,6 +96,9 @@
                 <td class="px-2 py-1.5 whitespace-nowrap font-medium">
                   {{ formatNumber(row.total) }}
                 </td>
+                <td class="px-2 py-1.5 whitespace-nowrap" :title="metricsTitle(row)">
+                  {{ metricsText(row) }}
+                </td>
                 <td class="px-2 py-1.5 whitespace-nowrap">{{ shortTime(row.lastAt) }}</td>
               </tr>
             </tbody>
@@ -110,6 +114,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRelayStore } from '../stores/relayStore.js'
 import RelayTokenChart from './RelayTokenChart.vue'
 import { formatTokenAmount } from '../utils/tokenChart.js'
+import { formatTps, formatTtft } from '../core/metrics/usage.js'
 
 const WINDOWS = [
   { id: 'hour', label: '时调用' },
@@ -120,7 +125,19 @@ const WINDOWS = [
 ]
 
 function emptyWindowStat() {
-  return { calls: 0, success: 0, prompt: 0, completion: 0, total: 0, lastAt: null }
+  return {
+    calls: 0,
+    success: 0,
+    prompt: 0,
+    completion: 0,
+    total: 0,
+    lastAt: null,
+    ttftSamples: 0,
+    ttftTotalMs: 0,
+    avgTtftMs: 0,
+    lastTtftMs: null,
+    lastTps: null,
+  }
 }
 
 function emptyWindows() {
@@ -146,6 +163,11 @@ function normalizeWindowStat(value) {
     completion: Number(value.completion) || 0,
     total: Number(value.total) || 0,
     lastAt: value.lastAt || null,
+    ttftSamples: Number(value.ttftSamples) || 0,
+    ttftTotalMs: Number(value.ttftTotalMs) || 0,
+    avgTtftMs: Number(value.avgTtftMs) || 0,
+    lastTtftMs: value.lastTtftMs ?? null,
+    lastTps: value.lastTps ?? null,
   }
 }
 
@@ -158,6 +180,11 @@ function emptyRow(id, extra = {}) {
     completion: 0,
     total: 0,
     lastAt: null,
+    ttftSamples: 0,
+    ttftTotalMs: 0,
+    avgTtftMs: 0,
+    lastTtftMs: null,
+    lastTps: null,
     windows: emptyWindows(),
     ...extra,
   }
@@ -192,6 +219,13 @@ function addLogToWindow(row, log) {
       stat.prompt += Number(log.usage.prompt) || 0
       stat.completion += Number(log.usage.completion) || 0
       stat.total += Number(log.usage.total) || 0
+    }
+    if (log.ttftMs != null) {
+      stat.ttftSamples += 1
+      stat.ttftTotalMs += Number(log.ttftMs) || 0
+      stat.avgTtftMs = Math.round(stat.ttftTotalMs / stat.ttftSamples)
+      stat.lastTtftMs = Number(log.ttftMs)
+      if (log.tps != null) stat.lastTps = Number(log.tps)
     }
     if (!stat.lastAt || new Date(log.at) > new Date(stat.lastAt)) stat.lastAt = log.at
     row.windows[key] = stat
@@ -228,13 +262,15 @@ export default {
     const relayStore = useRelayStore()
     let timer = null
 
-    const logs = computed(() => relayStore.logs)
+    // 日志可能未加载或被主进程返回成 undefined：统一在此兜底，模板与各 computed 只读 logs.value
+    const logs = computed(() => relayStore.logs || [])
 
     // 只要历史统计或日志任一有数据，就展示图表区
+    // 统计字段未加载时先兜底成数组，避免 undefined.length 在渲染期抛错
     const hasAnyUsage = computed(
       () =>
-        relayStore.tokenHistory.length > 0 ||
-        relayStore.tokenHourly.length > 0 ||
+        (relayStore.tokenHistory || []).length > 0 ||
+        (relayStore.tokenHourly || []).length > 0 ||
         logs.value.length > 0,
     )
 
@@ -243,9 +279,12 @@ export default {
     // 2) 再用主进程持久化的按 Key 统计补充调用量，不受日志 200 条上限影响。
     const keyRows = computed(() => {
       const map = new Map()
+      // providers / keyUsage 可能未加载或条目残缺：兜底成数组，条目用可选链，避免渲染期抛错
+      const providers = relayStore.providers || []
+      const keyUsage = relayStore.keyUsage || []
 
-      for (const provider of relayStore.providers) {
-        const name = provider.name || provider.id || '未知'
+      for (const provider of providers) {
+        const name = provider?.name || provider?.id || '未知'
         for (const key of providerKeysOf(provider)) {
           const tail = keyTailOf(key)
           if (!tail) continue
@@ -255,7 +294,7 @@ export default {
         }
       }
 
-      for (const item of relayStore.keyUsage) {
+      for (const item of keyUsage) {
         const tail = item?.keyTail || ''
         if (!tail) continue
         const provider = item.provider || '未知'
@@ -269,6 +308,11 @@ export default {
         row.completion = Number(item.completion) || 0
         row.total = Number(item.total) || 0
         row.lastAt = item.lastAt || row.lastAt
+        row.ttftSamples = Number(item.ttftSamples) || 0
+        row.ttftTotalMs = Number(item.ttftTotalMs) || 0
+        row.avgTtftMs = Number(item.avgTtftMs) || 0
+        row.lastTtftMs = item.lastTtftMs ?? null
+        row.lastTps = item.lastTps ?? null
         const windows = {}
         for (const windowDef of WINDOWS) {
           windows[windowDef.id] = normalizeWindowStat(item.windows?.[windowDef.id])
@@ -278,9 +322,9 @@ export default {
       }
 
       // 兼容旧版本主进程（还没返回 keys）：退回用内存日志估算
-      if (relayStore.keyUsage.length === 0) {
+      if (keyUsage.length === 0) {
         for (const log of logs.value) {
-          if (!log.keyTail) continue
+          if (!log || !log.keyTail) continue
           const provider = log.provider || '未知'
           const id = `${provider}::${log.keyTail}`
           const row = map.get(id) || emptyRow(id, { provider, keyTail: log.keyTail })
@@ -304,6 +348,7 @@ export default {
     const summary = computed(() => {
       const result = { calls: 0, prompt: 0, completion: 0, total: 0 }
       for (const log of logs.value) {
+        if (!log) continue
         result.calls += 1
         if (log.usage) {
           result.prompt += Number(log.usage.prompt) || 0
@@ -317,8 +362,9 @@ export default {
     // 缓存命中省下的 tokens：按日统计持久化，所以用 tokenHistory 汇总（不受日志条数上限影响）
     const cachedSummary = computed(() => {
       const result = { calls: 0, total: 0 }
-      for (const day of relayStore.tokenHistory) {
-        if (!day.cached) continue
+      // tokenHistory 未加载或条目残缺（null / 缺 cached）时按无缓存处理
+      for (const day of relayStore.tokenHistory || []) {
+        if (!day?.cached) continue
         result.calls += Number(day.cached.calls) || 0
         result.total += Number(day.cached.total) || 0
       }
@@ -341,6 +387,7 @@ export default {
       const seen = new Set()
 
       for (const log of logs.value) {
+        if (!log) continue
         // 流式请求不参与缓存，放进分母会把命中率稀释成无意义的 0
         if (log.stream) continue
         const id = log.requestId || log.id
@@ -377,9 +424,10 @@ export default {
     const savingsRate = computed(() => {
       let real = 0
       let saved = 0
-      for (const day of relayStore.tokenHistory) {
-        real += Number(day.total) || 0
-        saved += Number(day.cached?.total) || 0
+      // tokenHistory 未加载或条目残缺时按 0 参与计算
+      for (const day of relayStore.tokenHistory || []) {
+        real += Number(day?.total) || 0
+        saved += Number(day?.cached?.total) || 0
       }
       return real + saved > 0 ? Math.round((saved / (real + saved)) * 100) : null
     })
@@ -394,6 +442,23 @@ export default {
     }
 
     const formatNumber = (value) => Number(value || 0).toLocaleString('zh-CN')
+
+    // TTFT / 速度：优先用当前窗口的均值，没有样本时回退到累计值
+    const metricsText = (row) => {
+      if (!row || (row.ttftSamples || 0) === 0) return '—'
+      const ttft = row.avgTtftMs ?? row.lastTtftMs
+      return `${formatTtft(ttft)} · ${formatTps(row.lastTps)}`
+    }
+
+    const metricsTitle = (row) => {
+      if (!row || (row.ttftSamples || 0) === 0) return '该窗口内没有可用的速度样本'
+      const parts = [
+        `窗口内 ${row.ttftSamples} 次流式样本 · 平均首 token ${formatTtft(row.avgTtftMs)}`,
+      ]
+      if (row.lastTtftMs != null) parts.push(`最近首 token ${formatTtft(row.lastTtftMs)}`)
+      if (row.lastTps != null) parts.push(`最近输出速度 ${formatTps(row.lastTps)}`)
+      return parts.join(' · ')
+    }
 
     const shortTime = (iso) => {
       const date = new Date(iso)
@@ -427,6 +492,8 @@ export default {
       formatNumber,
       formatTokenAmount,
       shortTime,
+      metricsText,
+      metricsTitle,
     }
   },
 }

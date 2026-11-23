@@ -19,10 +19,16 @@ const relay = require('./relay.cjs')
 const { isPathSafe: isPathInside } = require('./lib/path-safety.cjs')
 const { normalizeWindowBounds, snapshotWindowState } = require('./lib/window-bounds.cjs')
 const { resolveDataDir, migrateDataFiles } = require('./lib/data-dir.cjs')
+const { walkSecrets } = require('./lib/secrets.cjs')
 
 // 冒烟/CI 用：把 userData 指到临时目录，既隔离单实例锁，也不污染真实历史记录
 if (process.env.APKEY_USER_DATA_DIR) {
   app.setPath('userData', process.env.APKEY_USER_DATA_DIR)
+} else {
+  // 数据目录固定为 name 字段（apikey-test-tool），不随 productName/exe 名变化。
+  // Windows 11 build 26300 上 exe 文件名含非 ASCII 字符会让沙箱初始化崩溃
+  // （0x80000003，见 CHANGELOG），exe 名改为 ASCII 后数据目录必须保持原位。
+  app.setPath('userData', path.join(app.getPath('appData'), 'apikey-test-tool'))
 }
 
 const USER_DATA_PATH = app.getPath('userData')
@@ -93,6 +99,9 @@ const ipcHandlers = [
   'relay-test-key',
   'relay-logs',
   'relay-clear-logs',
+  'relay-diagnostics',
+  'relay-diagnostics-clear',
+  'relay-observations',
   'relay-stats',
   'relay-stats-clear',
   'relay-token-history',
@@ -231,8 +240,31 @@ function rotateLogIfNeeded(logPath) {
   }
 }
 
+// 同一错误短时间反复出现时只记首次：滚动 10 秒窗口内只记首条，
+// 之后每 10 秒放行一条以证明错误仍在发生（轮询类故障曾 35 秒刷 12 条）
+const REPEAT_ERROR_WINDOW_MS = 10 * 1000
+const REPEAT_ERROR_MAX_KEYS = 200
+const recentErrors = new Map()
+
+function isRepeatError(errorType, errorMessage) {
+  const key = `${errorType}|${errorMessage}`
+  const now = Date.now()
+  // 防御性上限：超限时先淘汰过期键，仍超限才清空，避免突发错误重新放行重复日志
+  if (recentErrors.size > REPEAT_ERROR_MAX_KEYS) {
+    for (const [entryKey, at] of recentErrors) {
+      if (now - at >= REPEAT_ERROR_WINDOW_MS) recentErrors.delete(entryKey)
+    }
+    if (recentErrors.size > REPEAT_ERROR_MAX_KEYS) recentErrors.clear()
+  }
+  const last = recentErrors.get(key)
+  if (last !== undefined && now - last < REPEAT_ERROR_WINDOW_MS) return true
+  recentErrors.set(key, now)
+  return false
+}
+
 function logError(errorType, errorMessage, stackTrace) {
   try {
+    if (isRepeatError(errorType, errorMessage)) return
     const logPath = getLogFilePath()
     const timestamp = formatDate()
 
@@ -392,6 +424,10 @@ async function handleHttpRequest(payload) {
 
 // ---------- 流式代理（SSE / NDJSON） ----------
 // 逐块把响应推回渲染进程；非 2xx 时把 body 一次性读完返回，交给渲染层按普通错误处理。
+// 心跳：流式期间定期发 heartbeat 事件，前端可区分「慢」和「断」；
+// 首块嗅探：把识别出的真实流格式（sse/ndjson/json）随 meta 返回，供渲染层选择解析器。
+
+const STREAM_HEARTBEAT_MS = 15000
 
 function sendStreamEvent(sender, payload) {
   if (!sender || sender.isDestroyed()) return
@@ -400,6 +436,32 @@ function sendStreamEvent(sender, payload) {
   } catch {
     // 窗口已关闭，忽略
   }
+}
+
+// 按首块文本嗅探真实流格式（与 src/core/stream/sniff.js 同规则）
+function sniffStreamFormatMain(firstChunkText, contentType) {
+  const type = String(contentType || '').toLowerCase()
+  const byHeader = type.includes('event-stream')
+    ? 'sse'
+    : type.includes('ndjson') || type.includes('x-ndjson')
+      ? 'ndjson'
+      : type.includes('json')
+        ? 'json'
+        : ''
+  const raw = String(firstChunkText || '')
+  const trimmed = raw.trimStart()
+  if (!trimmed) return byHeader || 'unknown'
+  const firstLineEnd = trimmed.indexOf('\n')
+  const firstLine = (firstLineEnd === -1 ? trimmed : trimmed.slice(0, firstLineEnd)).trim()
+  if (
+    /^(data|event|id|retry):/.test(firstLine) ||
+    (firstLine.startsWith(':') && firstLine.length > 1)
+  ) {
+    return 'sse'
+  }
+  if (firstLine.startsWith('{')) return 'ndjson'
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return 'json'
+  return byHeader || 'unknown'
 }
 
 async function handleHttpStream(sender, payload) {
@@ -456,19 +518,30 @@ async function handleHttpStream(sender, payload) {
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
+    let firstChunkText = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const text = decoder.decode(value, { stream: true })
-      if (text) sendStreamEvent(sender, { requestId: key, type: 'chunk', text })
+    // 心跳定时器：流式期间每 15 秒发一次 heartbeat，前端可据此区分「慢」和「断」
+    const heartbeat = setInterval(() => {
+      sendStreamEvent(sender, { requestId: key, type: 'heartbeat' })
+    }, STREAM_HEARTBEAT_MS)
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const text = decoder.decode(value, { stream: true })
+        if (!firstChunkText && text) firstChunkText = text
+        if (text) sendStreamEvent(sender, { requestId: key, type: 'chunk', text })
+      }
+
+      const tail = decoder.decode()
+      if (tail) sendStreamEvent(sender, { requestId: key, type: 'chunk', text: tail })
+    } finally {
+      clearInterval(heartbeat)
     }
 
-    const tail = decoder.decode()
-    if (tail) sendStreamEvent(sender, { requestId: key, type: 'chunk', text: tail })
-
     sendStreamEvent(sender, { requestId: key, type: 'done' })
-    return meta
+    return { ...meta, streamFormat: sniffStreamFormatMain(firstChunkText, meta.contentType) }
   } catch (error) {
     const mapped = mapFetchError(error, {
       timedOut,
@@ -490,41 +563,35 @@ async function handleHttpStream(sender, payload) {
 }
 
 // ---------- 密钥加密（Electron safeStorage / Windows DPAPI） ----------
-// 落盘前把 apiKey 加密成 enc:<base64>，读取时还原；旧版明文数据仍可读。
+// 落盘前把 apiKey / apiKeys / clientKeys / keyGroups 里的 Key 加密成 enc:<base64>，
+// 读取时还原；旧版明文数据仍可读。字段规则见 lib/secrets.cjs。
 
-const SECRET_FIELDS = new Set(['apiKey', 'api_key'])
-
-function walkSecrets(node, fn, depth = 0) {
-  if (depth > 8 || node === null || typeof node !== 'object') return node
-  if (Array.isArray(node)) return node.map((item) => walkSecrets(item, fn, depth + 1))
-  const out = {}
-  for (const [key, value] of Object.entries(node)) {
-    if (SECRET_FIELDS.has(key) && typeof value === 'string') {
-      out[key] = fn(value)
-    } else {
-      out[key] = walkSecrets(value, fn, depth + 1)
-    }
-  }
-  return out
-}
-
-function handleSecureStore(op, data) {
-  const available = safeStorage.isEncryptionAvailable()
+async function handleSecureStore(op, data) {
+  const available = await safeStorage.isAsyncEncryptionAvailable()
 
   if (op === 'encrypt') {
     if (!available) return { ok: true, encrypted: false, data }
-    const result = walkSecrets(data, (value) => {
+    const result = await walkSecrets(data, async (value) => {
       if (!value || value.startsWith('enc:')) return value
-      return `enc:${safeStorage.encryptString(value).toString('base64')}`
+      const encrypted = await safeStorage.encryptStringAsync(value)
+      return `enc:${encrypted.toString('base64')}`
     })
     return { ok: true, encrypted: true, data: result }
   }
 
   if (op === 'decrypt') {
-    const result = walkSecrets(data, (value) => {
+    const result = await walkSecrets(data, async (value) => {
       if (!value.startsWith('enc:')) return value
       try {
-        return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
+        const decrypted = await safeStorage.decryptStringAsync(
+          Buffer.from(value.slice(4), 'base64'),
+        )
+        // Electron 45 的异步版解析为 { shouldReEncrypt, result }，取 result 作为明文；
+        // shouldReEncrypt 仅提示建议重加密，落盘时本就会重新走 encrypt 分支，无需处理
+        if (decrypted && typeof decrypted === 'object' && typeof decrypted.result === 'string') {
+          return decrypted.result
+        }
+        return decrypted
       } catch {
         // 换了机器/用户或数据损坏时解密失败，返回空值让用户重新输入
         return ''
@@ -843,13 +910,13 @@ function setAutoLaunch(enabled) {
   refreshTrayMenu()
 }
 
-function startRelayFromConfig() {
+async function startRelayFromConfig() {
   const stored = readRelayConfig()
   if (!stored || !Array.isArray(stored.providers) || stored.providers.length === 0) {
     return Promise.resolve(false)
   }
   // apiKey 落盘时是 enc:<base64>，启动前先解密，否则上游会收到加密串
-  const decrypted = handleSecureStore('decrypt', stored)
+  const decrypted = await handleSecureStore('decrypt', stored)
   const config = decrypted?.ok ? decrypted.data : stored
   return relay
     .start({
@@ -879,6 +946,48 @@ function autoStartRelay() {
   startRelayFromConfig()
 }
 
+// ---------- 加载失败兜底 ----------
+// 打包漏文件、asar 损坏或资源路径错误时，Chromium 只会显示纯白窗口，用户无法判断原因。
+// 这里在重试仍失败或入口文件缺失时加载一个可读的错误页，并写入 ERROR_LOG.md。
+
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+  )
+}
+
+let loadErrorShown = false
+
+function showLoadErrorPage(errorCode, errorDescription, failedURL) {
+  if (!mainWindow || mainWindow.isDestroyed() || loadErrorShown) return
+  loadErrorShown = true
+  const indexFile = path.join(__dirname, '../dist/index.html')
+  const exists = fs.existsSync(indexFile)
+  const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>界面加载失败</title>
+<style>
+body{margin:0;padding:32px;background:#0f1115;color:#e6e6e6;font:14px/1.7 system-ui,"Microsoft YaHei",sans-serif}
+h1{margin:0 0 12px;font-size:18px;color:#ff6b6b}
+p,li{color:#a9b0bd}
+code{padding:2px 6px;border-radius:4px;background:#1c2029;color:#e6e6e6;word-break:break-all}
+li{margin:4px 0}
+</style></head>
+<body>
+<h1>界面加载失败</h1>
+<p>应用前端资源没有正确加载，通常是打包产物缺失、过期或损坏。</p>
+<ul>
+  <li>错误：<code>${escapeHtml(errorCode)} ${escapeHtml(errorDescription)}</code></li>
+  <li>地址：<code>${escapeHtml(failedURL)}</code></li>
+  <li>入口：<code>${escapeHtml(indexFile)}</code>${exists ? '' : '（文件不存在）'}</li>
+</ul>
+<p>请重新执行 <code>npm run build:win</code>，或重新安装应用。详细日志见数据目录下的 <code>ERROR_LOG.md</code>。</p>
+</body></html>`
+
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
+  if (!mainWindow.isVisible()) mainWindow.show()
+}
+
 function createWindow() {
   const state = loadWindowState()
 
@@ -901,13 +1010,43 @@ function createWindow() {
     autoHideMenuBar: process.platform !== 'darwin',
   })
 
-  // 页面渲染完成后再显示窗口，避免启动时出现长时间白屏
+  // 页面渲染完成后再显示窗口，避免启动时出现长时间白屏；
+  // 若 ready-to-show 一直不触发（渲染进程异常等），超时后也强制显示，至少让用户看到错误提示
+  const showFallbackTimer = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return
+    logError('Window Show Fallback', 'ready-to-show 未在 10 秒内触发，强制显示窗口', null)
+    mainWindow.show()
+  }, 10000)
+
   mainWindow.once('ready-to-show', () => {
+    clearTimeout(showFallbackTimer)
     if (state.maximized) {
       mainWindow.maximize()
     } else {
       mainWindow.show()
     }
+  })
+
+  mainWindow.on('closed', () => {
+    clearTimeout(showFallbackTimer)
+  })
+
+  // 渲染进程只在控制台里报错时，白屏问题很难定位：把错误级日志写进 ERROR_LOG.md
+  function onRendererConsoleMessage(event, details) {
+    // Electron 45 为 (event, details)；兼容旧版 (event, level, message, line, sourceId)
+    const legacy = typeof details === 'number' || typeof details === 'string'
+    const level = legacy ? details : details?.level
+    const message = legacy ? arguments[2] : details?.message
+    const sourceUrl = legacy ? arguments[4] : details?.sourceUrl
+    const isError = level === 'error' || level === 3 || level === 'Error'
+    if (!isError || !message) return
+    if (/DevTools|Electron Security Warning/i.test(message)) return
+    logError('Renderer Console', `${message}${sourceUrl ? ` (${sourceUrl})` : ''}`, null)
+  }
+  mainWindow.webContents.on('console-message', onRendererConsoleMessage)
+
+  mainWindow.webContents.on('preload-error', (event, preloadPath, error) => {
+    logError('Preload Error', `${preloadPath}: ${error?.message || error}`, error?.stack || null)
   })
 
   mainWindow.webContents.on('render-process-gone', (event, details) => {
@@ -920,29 +1059,32 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     loadRetries = 0
+    // 错误页是 data: URL，加载成功后不再把它当成正常页面
+    if (loadErrorShown && !/^data:text\/html/i.test(mainWindow?.webContents?.getURL() || '')) {
+      loadErrorShown = false
+    }
   })
 
   mainWindow.webContents.on(
     'did-fail-load',
     (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      logError('Page Load Failed', `${errorCode}: ${errorDescription}`, null)
+      // -3 = ERR_ABORTED：加载被新导航取代（开发模式下 HMR 整页刷新常见），非真实失败
+      if (errorCode === -3) return
+      logError('Page Load Failed', `${errorCode}: ${errorDescription} (${validatedURL})`, null)
       // 加载失败时 ready-to-show 不会触发，需手动显示窗口避免一直空白
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
         mainWindow.show()
       }
       // 主框架加载失败（开发模式下 vite 还没就绪常见）时自动重试，最多两次
-      if (
-        isMainFrame &&
-        errorCode !== -3 &&
-        loadRetries < 2 &&
-        mainWindow &&
-        !mainWindow.isDestroyed()
-      ) {
+      if (isMainFrame && loadRetries < 2 && mainWindow && !mainWindow.isDestroyed()) {
         loadRetries += 1
         setTimeout(() => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload()
         }, 800)
+        return
       }
+      // 重试仍失败：显示可读的错误页，避免用户只看到一片空白
+      if (isMainFrame) showLoadErrorPage(errorCode, errorDescription, validatedURL)
     },
   )
 
@@ -981,7 +1123,13 @@ function createWindow() {
     // 启动时打开独立 DevTools，但会解除它的置顶并把焦点还给主窗口（F12 可开关）
     openDevToolsDetached()
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    const indexFile = path.join(__dirname, '../dist/index.html')
+    if (!fs.existsSync(indexFile)) {
+      logError('Packaging', `前端入口缺失：${indexFile}`, null)
+      showLoadErrorPage('ENOENT', 'dist/index.html 不存在（打包产物不完整）', indexFile)
+    } else {
+      mainWindow.loadFile(indexFile)
+    }
   }
 }
 
@@ -1276,8 +1424,13 @@ ipcMain.handle('relay-start', async (event, config) => {
     return { ok: true, ...info, status: relay.getStatus() }
   } catch (error) {
     refreshTrayMenu()
-    const hint = error.code === 'EADDRINUSE' ? `端口 ${config?.port} 已被占用` : error.message
-    return { ok: false, error: hint }
+    const hint = error.listenError?.message || error.message
+    return {
+      ok: false,
+      error: hint,
+      code: error.code || '',
+      alternativePort: error.listenError?.alternativePort || 0,
+    }
   }
 })
 
@@ -1288,6 +1441,18 @@ ipcMain.handle('relay-stop', async () => {
 })
 
 ipcMain.handle('relay-status', async () => ({ ok: true, status: relay.getStatus() }))
+
+// 手动解除 429 额度锁：保留用量记账，只清锁定/等级，让被锁的 Key 立即重新可用
+ipcMain.handle('relay-quota-unlock', async (event, providerId) => {
+  const cleared = relay.unlockQuota(String(providerId || ''))
+  return { ok: true, cleared, status: relay.getStatus() }
+})
+
+// 手动触发一轮 Key 额度探测（全部或指定提供商）；结果并入 keyProbe 快照
+ipcMain.handle('relay-key-probe', async (event, providerId) => {
+  const result = await relay.probeAllKeys(String(providerId || ''))
+  return { ok: true, ...result, status: relay.getStatus() }
+})
 
 ipcMain.handle('relay-update', async (event, config) => ({
   ok: true,
@@ -1300,6 +1465,23 @@ ipcMain.handle('relay-clear-logs', async () => {
   relay.clearLogs()
   return { ok: true, logs: [] }
 })
+
+// 运行诊断日志：启动/停止、配置变更、额度锁定、上游异常等事件
+ipcMain.handle('relay-diagnostics', async () => ({
+  ok: true,
+  diagnostics: relay.getDiagnostics(),
+}))
+
+ipcMain.handle('relay-diagnostics-clear', async () => {
+  relay.clearDiagnostics()
+  return { ok: true, diagnostics: [] }
+})
+
+// 长期提供商观察：按 提供商 + 模型 + 日期 聚合，保留 180 天
+ipcMain.handle('relay-observations', async () => ({
+  ok: true,
+  observations: relay.getProviderObservations(),
+}))
 
 ipcMain.handle('relay-stats', async () => ({ ok: true, stats: relay.getStats() }))
 
@@ -1334,12 +1516,12 @@ ipcMain.handle('http-abort', async (event, requestId) => {
 
 ipcMain.handle('secure-store', async (event, op, data) => {
   try {
-    return handleSecureStore(op, data)
+    return await handleSecureStore(op, data)
   } catch (error) {
     return { ok: false, error: error.message }
   }
 })
 
 ipcMain.handle('secure-available', async () => {
-  return { available: safeStorage.isEncryptionAvailable() }
+  return { available: await safeStorage.isAsyncEncryptionAvailable() }
 })

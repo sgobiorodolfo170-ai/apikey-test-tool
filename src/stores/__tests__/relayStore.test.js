@@ -206,14 +206,15 @@ describe('relayStore', () => {
 
     expect(store.providers[0].quota).toMatchObject({
       enabled: true,
-      metric: 'request',
-      limit5h: 1500,
-      limitWeek: 15000,
+      confirmStrikes: 3,
+      confirmIntervalMinutes: 1,
+      confirmSpanMinutes: 9,
     })
+    expect(store.providers[0].quota).not.toHaveProperty('limit5h')
     expect(store.providers[0].models).toEqual(['deepseek-v4-flash'])
   })
 
-  it('upgrades 端砚 legacy quota to calendar-month without touching other providers', async () => {
+  it('normalizes 端砚 legacy quota without touching other providers', async () => {
     readRelay.mockResolvedValue({
       port: 8787,
       providers: [
@@ -259,21 +260,62 @@ describe('relayStore', () => {
     expect(duanyan.maxConcurrency).toBe(8)
     expect(duanyan.queueTimeoutMs).toBe(30000)
     expect(duanyan.quota).toMatchObject({
-      windowMode: 'calendar-month',
-      limitMonth: 10,
-      limit5h: 0,
-      limitWeek: 0,
+      enabled: true,
+      confirmStrikes: 3,
+      confirmIntervalMinutes: 1,
+      confirmSpanMinutes: 9,
       // 用户已有的 Key 共享组要保留
       keyGroups: { 'sk-a': '账号A' },
     })
-    expect(duanyan.quota.modelRates['glm-5.3']).toBe(28)
+    // 旧的积分 / 墨点 / 单价字段被丢弃
+    expect(duanyan.quota).not.toHaveProperty('metric')
+    expect(duanyan.quota).not.toHaveProperty('limitMonth')
+    expect(duanyan.quota).not.toHaveProperty('modelRates')
 
-    // 其它提供商完全不受影响
+    // 其它提供商的真实限流参数不受影响，额度同样归一化为自动保护
     const sensenova = store.providers[1]
     expect(sensenova.strategy).toBeUndefined()
     expect(sensenova.maxConcurrency).toBe(2)
     expect(sensenova.rpmLimit).toBe(15)
-    expect(sensenova.quota).toMatchObject({ limit5h: 1500, limitWeek: 15000 })
+    expect(sensenova.quota).toMatchObject({ enabled: true, confirmStrikes: 3 })
+    expect(sensenova.quota).not.toHaveProperty('limit5h')
+  })
+
+  it('deliberate 端砚 maxConcurrency=4 survives reload after one-time migration', async () => {
+    // 第一次加载：历史默认 4 迁移为预设 8，并落盘 limitsMigrated 标记
+    readRelay.mockResolvedValue({
+      port: 8787,
+      providers: [
+        {
+          id: 'd1',
+          name: '书生·端砚',
+          baseUrl: 'https://discovery-api.intern-ai.org.cn/v1',
+          presetId: 'duanyan',
+          strategy: 'duanyan',
+          models: ['glm-5.3'],
+          enabled: true,
+          maxConcurrency: 4,
+          rpmLimit: 50,
+          apiKeys: ['sk-a'],
+        },
+      ],
+    })
+    mountBridge()
+    const store = useRelayStore()
+    await store.load()
+    expect(store.providers[0].maxConcurrency).toBe(8)
+    expect(store.providers[0].limitsMigrated).toBe(true)
+
+    // 第二次加载：用户刻意把并发改回 4 —— 不得再被重置
+    readRelay.mockResolvedValue({
+      port: 8787,
+      providers: [{ ...JSON.parse(JSON.stringify(store.providers[0])), maxConcurrency: 4 }],
+    })
+    setActivePinia(createPinia())
+    const reloaded = useRelayStore()
+    await reloaded.load()
+    expect(reloaded.providers[0].maxConcurrency).toBe(4)
+    expect(reloaded.providers[0].limitsMigrated).toBe(true)
   })
 
   it('normalizes quota when adding a provider', async () => {
@@ -285,6 +327,7 @@ describe('relayStore', () => {
       baseUrl: 'https://discovery-api.intern-ai.org.cn/v1',
       quota: {
         enabled: true,
+        // 旧字段应被丢弃
         metric: 'credit',
         limit5h: 10,
         limitWeek: 50,
@@ -296,25 +339,15 @@ describe('relayStore', () => {
 
     expect(provider.quota).toEqual({
       enabled: true,
-      metric: 'credit',
-      windowMode: 'rolling',
-      limitMonth: 0,
-      limit5h: 10,
-      limitWeek: 50,
-      creditsPerMillionTokens: 4,
       confirmStrikes: 3,
       confirmIntervalMinutes: 1,
       confirmSpanMinutes: 0,
       burstWindowMinutes: 0,
       burstStrikes: 0,
-      reserveRatio: 0,
       warmupMinutes: 0,
-      perModel: false,
       group: '',
       groups: [],
       keyGroups: {},
-      modelLimits: {},
-      modelRates: {},
     })
   })
 
@@ -362,6 +395,8 @@ describe('relayStore', () => {
       apiKey: '',
       clientKeys: [],
       sticky: false,
+      defaultProviderId: '',
+      lan: { enabled: false },
       cache: { enabled: false, ttlMs: 300000, maxEntries: 200 },
       providers: store.providers,
     })
@@ -519,5 +554,187 @@ describe('relayStore 限流配置', () => {
 
     expect(provider.maxConcurrency).toBe(2)
     expect(provider.rpmLimit).toBe(60)
+  })
+
+  it('normalizes autoProbe when adding a provider', async () => {
+    mountBridge()
+    const store = useRelayStore()
+
+    const provider = await store.addProvider({
+      name: 'A',
+      baseUrl: 'https://a',
+      autoProbe: { enabled: true, intervalMinutes: 15, model: ' cheap ' },
+    })
+
+    expect(provider.autoProbe).toEqual({ enabled: true, intervalMinutes: 15, model: 'cheap' })
+  })
+})
+
+describe('relayStore probeNow（Key 额度探测）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    readRelay.mockResolvedValue({ port: 8787, providers: [] })
+    saveRelay.mockImplementation(async (config) => config)
+  })
+
+  it('手动探测成功：更新 status.keyProbe 并提示完成', async () => {
+    const probeKeys = vi.fn(async () => ({
+      ok: true,
+      results: [{ providerId: 'p1', name: 'A', ok: true, keys: 2, model: 'm' }],
+      snapshot: [{ providerId: 'p1', keys: [{ keyTail: 'abc123', result: 'ok' }] }],
+      status: { running: true, keyProbe: [{ providerId: 'p1', keys: [] }] },
+    }))
+    mountBridge({ probeKeys })
+    const store = useRelayStore()
+
+    const result = await store.probeNow()
+
+    expect(probeKeys).toHaveBeenCalledWith('')
+    expect(store.status?.keyProbe).toEqual([{ providerId: 'p1', keys: [] }])
+    expect(store.keyProbing).toBe(false)
+    expect(result?.ok).toBe(true)
+  })
+
+  it('环境不支持探测时提示错误并保持空闲', async () => {
+    mountBridge({})
+    const store = useRelayStore()
+
+    const result = await store.probeNow('p1')
+
+    expect(result).toBeNull()
+    expect(store.keyProbing).toBe(false)
+  })
+})
+
+describe('relayStore 默认上游与局域网', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    readRelay.mockResolvedValue({ port: 8787, providers: [] })
+    saveRelay.mockImplementation(async (config) => config)
+  })
+
+  it('loads defaultProviderId and lan from persisted config', async () => {
+    readRelay.mockResolvedValue({
+      port: 8787,
+      providers: [{ id: 'p1', name: 'A', baseUrl: 'https://a', enabled: true }],
+      defaultProviderId: 'p1',
+      lan: { enabled: true },
+    })
+    mountBridge()
+    const store = useRelayStore()
+
+    await store.load()
+
+    expect(store.defaultProviderId).toBe('p1')
+    expect(store.lanEnabled).toBe(true)
+    expect(store.defaultProviderName).toBe('A')
+  })
+
+  it('defaults to no default provider and lan off when absent', async () => {
+    mountBridge()
+    const store = useRelayStore()
+
+    await store.load()
+
+    expect(store.defaultProviderId).toBe('')
+    expect(store.lanEnabled).toBe(false)
+  })
+
+  it('sets the default provider, persists only the id, and pushes to a running relay', async () => {
+    const bridge = mountBridge()
+    const store = useRelayStore()
+    const provider = await store.addProvider({
+      name: 'A',
+      baseUrl: 'https://a',
+      apiKey: 'sk-secret',
+    })
+
+    store.running = true
+    await store.setDefaultProvider(provider.id)
+
+    expect(store.defaultProviderId).toBe(provider.id)
+    expect(saveRelay).toHaveBeenLastCalledWith(
+      expect.objectContaining({ defaultProviderId: provider.id }),
+    )
+    const updatePayload = bridge.update.mock.calls.at(-1)[0]
+    expect(updatePayload.defaultProviderId).toBe(provider.id)
+    // 设为默认只写 id，不改凭据
+    expect(updatePayload.providers[0].apiKey).toBe('sk-secret')
+  })
+
+  it('ignores an unknown provider id and clears with empty string', async () => {
+    mountBridge()
+    const store = useRelayStore()
+    const provider = await store.addProvider({ name: 'A', baseUrl: 'https://a' })
+
+    await store.setDefaultProvider('does-not-exist')
+    expect(store.defaultProviderId).toBe('')
+
+    await store.setDefaultProvider(provider.id)
+    expect(store.defaultProviderId).toBe(provider.id)
+
+    await store.setDefaultProvider('')
+    expect(store.defaultProviderId).toBe('')
+    expect(useToastStore().toasts.at(-1).message).toContain('取消默认')
+  })
+
+  it('refuses to enable lan without an access key', async () => {
+    mountBridge()
+    const store = useRelayStore()
+
+    await store.setLanEnabled(true)
+
+    expect(store.lanEnabled).toBe(false)
+    expect(saveRelay).not.toHaveBeenCalled()
+    expect(useToastStore().toasts.at(-1).type).toBe('warning')
+  })
+
+  it('enables lan when an access key exists and persists it', async () => {
+    mountBridge()
+    const store = useRelayStore()
+    await store.generateApiKey()
+
+    await store.setLanEnabled(true)
+
+    expect(store.lanEnabled).toBe(true)
+    expect(saveRelay).toHaveBeenLastCalledWith(expect.objectContaining({ lan: { enabled: true } }))
+  })
+
+  it('enables lan when only client keys exist', async () => {
+    mountBridge()
+    const store = useRelayStore()
+    await store.addClientKey('工具A')
+
+    await store.setLanEnabled(true)
+
+    expect(store.lanEnabled).toBe(true)
+  })
+
+  it('hints a restart when lan changes while running', async () => {
+    mountBridge()
+    const store = useRelayStore()
+    await store.generateApiKey()
+    store.running = true
+
+    await store.setLanEnabled(true)
+
+    expect(useToastStore().toasts.at(-1).message).toContain('重新启动')
+  })
+
+  it('carries defaultProviderId and lan in the start payload', async () => {
+    const bridge = mountBridge()
+    const store = useRelayStore()
+    const provider = await store.addProvider({ name: 'A', baseUrl: 'https://a' })
+    await store.generateApiKey()
+    await store.setDefaultProvider(provider.id)
+    await store.setLanEnabled(true)
+
+    await store.start()
+
+    const payload = bridge.start.mock.calls.at(-1)[0]
+    expect(payload.defaultProviderId).toBe(provider.id)
+    expect(payload.lan).toEqual({ enabled: true })
   })
 })

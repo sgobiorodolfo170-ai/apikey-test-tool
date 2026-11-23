@@ -2,6 +2,7 @@ import http from './http.js'
 import { toOpenAIContent } from './multimodal.js'
 import {
   buildUrl,
+  authHeaders,
   getErrorMessage,
   extractProviderError,
   describeListError,
@@ -28,7 +29,7 @@ function needsMaxCompletionTokens(error) {
 async function postChatCompletion(url, apiKey, body, controller, timeout = TIMEOUT) {
   const requestOptions = {
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      ...authHeaders(apiKey),
       'Content-Type': 'application/json',
     },
     timeout,
@@ -137,7 +138,7 @@ export async function testOpenAIConnection(config) {
     try {
       await http.get(buildUrl(baseUrl, '/models'), {
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          ...authHeaders(apiKey),
           'Content-Type': 'application/json',
         },
         timeout: 10000,
@@ -180,7 +181,7 @@ export async function listOpenAIModels(config) {
         const url = buildUrl(baseUrl, path)
         const response = await http.get(url, {
           headers: {
-            Authorization: `Bearer ${apiKey}`,
+            ...authHeaders(apiKey),
             'Content-Type': 'application/json',
           },
           timeout: TIMEOUT,
@@ -335,7 +336,7 @@ export async function testAllModelsConcurrently(config, models, concurrency = 5)
 
 async function streamOpenAIOnce(url, apiKey, body, signal, timeout, onDelta) {
   const headers = {
-    Authorization: `Bearer ${apiKey}`,
+    ...authHeaders(apiKey),
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
   }

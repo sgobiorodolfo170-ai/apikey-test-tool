@@ -105,6 +105,7 @@ import { useUpdateStore } from './stores/updateStore.js'
 import { cancelAllRequests as cancelOpenAIRequests } from './api/openai.js'
 import { cancelAllRequests as cancelAnthropicRequests } from './api/anthropic.js'
 import { initStorage } from './utils/storage.js'
+import { logCapabilitySnapshot } from './core/capabilities.js'
 
 const LAYOUT_KEY = 'dashboard-layout'
 const COLLAPSE_KEY = 'dashboard-chat-collapsed'
@@ -262,6 +263,15 @@ export default {
 
     const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
 
+    // 读取左区实际渲染宽度：ref 若异常挂到非 DOM 元素（如组件实例），
+    // getBoundingClientRect 会不存在（?. 只能防 null 防不了组件实例），
+    // 此时返回 0，让调用方跳过宽度校正而不是抛错
+    const readLeftPaneWidth = () => {
+      const el = leftPaneEl.value
+      if (typeof el?.getBoundingClientRect !== 'function') return 0
+      return el.getBoundingClientRect().width || 0
+    }
+
     // 折叠后把主窗口收窄到刚好容纳左区：先按折叠前左区宽度估算，
     // 等窗口重排后按实际渲染宽度补偿一次，保证左区宽度不变。
     async function fitWindowToLeftPane(paneWidth) {
@@ -274,7 +284,7 @@ export default {
 
       await nextFrame()
       await new Promise((resolve) => setTimeout(resolve, 120))
-      const after = leftPaneEl.value?.getBoundingClientRect().width || 0
+      const after = readLeftPaneWidth()
       if (paneWidth && Math.abs(after - paneWidth) > 2) {
         // setBounds 使用窗口外框宽度，校正时同样按 outerWidth 计算
         await api.setWindowCollapsed({
@@ -290,7 +300,8 @@ export default {
     const toggleChatCollapsed = async () => {
       const api = window.electronAPI
       const willCollapse = !chatCollapsed.value
-      const paneWidth = leftPaneEl.value?.getBoundingClientRect().width || 0
+      // 取不到左区宽度（ref 挂到了非 DOM 元素）时按 0 处理，宽度校正逻辑会自行跳过
+      const paneWidth = readLeftPaneWidth()
 
       windowFit.suspended = true
       chatCollapsed.value = willCollapse
@@ -317,7 +328,8 @@ export default {
     function startPaneResize(event) {
       if (chatCollapsed.value) return
       const container = workspaceEl.value
-      if (!container) return
+      // 廉价防御：ref 若异常挂到非 DOM 元素（如组件实例），getBoundingClientRect 不存在，直接跳过本次拖拽
+      if (!container || typeof container.getBoundingClientRect !== 'function') return
       const rect = container.getBoundingClientRect()
       if (!rect.width) return
 
@@ -462,6 +474,7 @@ export default {
 
     onMounted(async () => {
       await initStorage()
+      logCapabilitySnapshot()
       window.addEventListener('error', errorHandler)
       window.addEventListener('unhandledrejection', rejectionHandler)
 
@@ -472,7 +485,12 @@ export default {
         historyStore.loadHistory()
       }
 
-      if (containerRef.value && typeof ResizeObserver !== 'undefined') {
+      // ref 必须是已挂载的真实 DOM（有 getBoundingClientRect），组件实例会让 observe 抛错
+      if (
+        containerRef.value &&
+        typeof containerRef.value.getBoundingClientRect === 'function' &&
+        typeof ResizeObserver !== 'undefined'
+      ) {
         resizeObserver = new ResizeObserver((entries) => {
           for (const entry of entries) {
             lastSize.width = entry.contentRect.width

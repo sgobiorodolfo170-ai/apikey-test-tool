@@ -64,6 +64,25 @@
 
         <div class="h-px bg-border my-1"></div>
 
+        <div class="text-[14px] font-medium text-text-primary">能力状态</div>
+        <div class="text-[13px] text-text-muted leading-relaxed">
+          可选能力缺失时只降级，不影响测速与本地网关的核心功能。
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <div
+            v-for="item in capabilities"
+            :key="item.id"
+            class="flex items-center justify-between gap-3 text-[13px]"
+          >
+            <span class="text-text-primary">{{ item.label }}</span>
+            <span :class="capabilityClass(item.status)" :title="item.detail">
+              {{ capabilityStatusLabel(item.status) }}
+            </span>
+          </div>
+        </div>
+
+        <div class="h-px bg-border my-1"></div>
+
         <div class="text-[14px] font-medium text-text-primary">版本更新</div>
         <div class="text-[13px] text-text-muted leading-relaxed">
           当前 v{{ updateStore.currentVersion }} · 最新
@@ -104,6 +123,7 @@
 <script>
 import { computed, ref, watch } from 'vue'
 import { useUpdateStore } from '../stores/updateStore.js'
+import { capabilityStatusLabel, detectCapabilities } from '../core/capabilities.js'
 
 export default {
   name: 'SettingsDialog',
@@ -117,6 +137,13 @@ export default {
     const busy = ref(false)
     const error = ref('')
     const copied = ref(false)
+    const capabilities = detectCapabilities()
+    const capabilityClass = (status) =>
+      status === 'available'
+        ? 'text-success'
+        : status === 'degraded'
+          ? 'text-accent'
+          : 'text-text-muted'
 
     const canChoose = computed(
       () => typeof window !== 'undefined' && Boolean(window.electronAPI?.chooseDataDir),
@@ -204,6 +231,9 @@ export default {
       busy,
       error,
       copied,
+      capabilities,
+      capabilityClass,
+      capabilityStatusLabel,
       canChoose,
       close,
       chooseDir,

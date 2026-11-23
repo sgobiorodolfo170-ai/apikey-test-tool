@@ -17,14 +17,17 @@ electron/
   main.cjs      窗口/托盘/生命周期、HTTP/SSE 代理、文件 IPC、safeStorage、代码执行
   preload.cjs   contextBridge 暴露 electronAPI（白名单 IPC）
   relay.cjs     本地中转站：路由、故障转移、限流、额度、缓存、日志/统计
+  generated/    由 scripts/generate-providers-cjs.cjs 生成的供应商 CJS 快照
 src/
+  core/         注册表、能力矩阵等纯逻辑（ESM，可单测）
   api/          协议适配器、统一 HTTP 出口、SSE/NDJSON 解析、体检/测评编排
   components/   配置、历史、渠道、中转站、调用监控、统计、聊天、测评、结果
   stores/       Pinia：test / history / channel / relay / chat / eval / toast / update
-  data/         指纹库、题库、中转站预设
+  data/         指纹库、题库、中转站预设、providers.json（唯一供应商注册表）
   utils/        持久化、报告、对比、图片压缩、版本比较
   __tests__/    relay 集成测试与测试 setup
 scripts/
+  generate-providers-cjs.cjs  由 providers.json 生成主进程快照
   smoke.cjs     真实 Electron + CDP 冒烟
 docs/           RELAY.md、DEVELOPMENT.md
 ```
@@ -95,15 +98,19 @@ docs/           RELAY.md、DEVELOPMENT.md
 ## 命令
 
 ```bash
+npm run generate:registry  # 由 src/data/providers.json 生成 electron/generated/providers.cjs
 npm run dev             # Vite（浏览器调试，无持久化）
 npm run electron:dev    # Vite + Electron
 npm test                # Vitest
 npm run test:watch
 npm run lint
 npm run format:check
-npm run build           # vite build + electron-builder（当前平台）
-npm run build:win       # Windows portable
+npm run build           # vite build + electron-builder（当前平台，含产物核查）
+npm run build:win       # Windows portable + nsis（含产物核查）
 npm run build:mac       # macOS dmg + zip（需在 macOS 上执行）
+npm run verify:dist     # 只核查 dist 前端产物
+npm run verify:package  # 核查 app.asar 与安装包
+npm run verify:app      # 启动已打包应用，确认页面不是白屏
 npm run smoke           # 需先 build；真实 Electron + CDP
 ```
 
@@ -129,6 +136,8 @@ npm run smoke           # 需先 build；真实 Electron + CDP
 
 ## 打包
 
+> 发版前必须按 [PACKAGING.md](PACKAGING.md) 的核查清单执行。`npm run build:*` 会自动做产物核查，失败即中止。
+
 - Windows：`npm run build:win`，`win.target` 为 `portable` + `nsis`（均为 x64），产物在 `dist-app/`：
   - `APIKeyTester-<version>-portable-x64.exe`（免安装单文件）
   - `APIKeyTester-<version>-setup-x64.exe`（安装向导 + 快捷方式）
@@ -136,7 +145,8 @@ npm run smoke           # 需先 build；真实 Electron + CDP
 - macOS：`npm run build:mac`，`mac.target` 为 dmg + zip、x64 + arm64；应用图标使用 `ico/icon.svg`，electron-builder 在 macOS 上转换为 icns。
 - 通用：`npm run build` 构建当前平台；前端产物在 `dist/`。
 - macOS 包必须在 macOS 上构建（不支持在 Windows 交叉打包）；未做代码签名与公证，首次打开需右键“打开”。
-- `build.files` 只包含 `dist/`、`electron/`、`ico/` 与 `package.json`。
+- `build.files` 只包含 `dist/`、`electron/`、`ico/` 与 `package.json`；打包前先退出所有旧实例，避免 `app.asar` 被占用。
+- 白屏排查与发布核查：见 [PACKAGING.md](PACKAGING.md)。
 
 ## 约定
 

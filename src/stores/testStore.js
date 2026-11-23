@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia'
 import { getApiAdapter } from '../api/modes.js'
+import {
+  nextProbeState,
+  probeInputFromConnection,
+  probeInputFromTestResult,
+} from '../core/probe/state.js'
 import { saveTestRecord, saveProvider } from '../utils/storage.js'
 import { useHistoryStore } from './historyStore.js'
 import { useToastStore } from './toastStore.js'
@@ -107,11 +112,14 @@ export const useTestStore = defineStore('test', {
         }
 
         if (!connectionResult || !connectionResult.connected) {
+          const probe = nextProbeState('unknown', probeInputFromConnection(connectionResult))
           this.setCurrentResult({
             connected: false,
             connectTime: connectionResult?.connectTime || 0,
             error: connectionResult?.error || '连接失败，请检查Base URL和API Key',
             status: connectionResult?.status,
+            probeState: probe.state,
+            probeEvidence: probe.evidence,
             models: [],
           })
           return { success: false }
@@ -123,6 +131,10 @@ export const useTestStore = defineStore('test', {
           modelResults = await adapter.testModels(config, sample, 5)
         }
 
+        modelResults = modelResults.map((item) => {
+          const probe = nextProbeState('unknown', probeInputFromTestResult(item))
+          return { ...item, probeState: probe.state, probeEvidence: probe.evidence }
+        })
         const successModels = modelResults.filter((m) => m.status === 'success')
         const failedModels = modelResults.filter((m) => m.status !== 'success')
         const avgLatency =
@@ -136,6 +148,7 @@ export const useTestStore = defineStore('test', {
           connected: true,
           connectTime: connectionResult.connectTime,
           models: modelResults,
+          probeState: nextProbeState('unknown', probeInputFromConnection(connectionResult)).state,
           summary: {
             success: successModels.length,
             failed: failedModels.length,
@@ -203,13 +216,20 @@ export const useTestStore = defineStore('test', {
       try {
         const adapter = getApiAdapter(config.apiMode)
         const result = await adapter.testModelLatency(config, model)
+        const probe = nextProbeState('unknown', probeInputFromTestResult(result))
+        const probedResult = {
+          ...result,
+          probeState: probe.state,
+          probeEvidence: probe.evidence,
+        }
 
         const success = result.status === 'success'
         const finalResult = {
           connected: success,
           connectTime: success ? result.latency : 0,
           testedModel: model,
-          models: [result],
+          models: [probedResult],
+          probeState: probe.state,
           error: success ? undefined : result.error || '模型连通测试失败',
           summary: {
             success: success ? 1 : 0,
@@ -278,7 +298,11 @@ export const useTestStore = defineStore('test', {
       try {
         const adapter = getApiAdapter(config.apiMode)
         const modelResults = await adapter.testModels(config, list, 5)
-        const successModels = modelResults.filter((m) => m.status === 'success')
+        const probedResults = modelResults.map((item) => {
+          const probe = nextProbeState('unknown', probeInputFromTestResult(item))
+          return { ...item, probeState: probe.state, probeEvidence: probe.evidence }
+        })
+        const successModels = probedResults.filter((m) => m.status === 'success')
         const avgLatency = successModels.length
           ? Math.round(successModels.reduce((sum, m) => sum + m.latency, 0) / successModels.length)
           : 0
@@ -286,10 +310,12 @@ export const useTestStore = defineStore('test', {
         this.setCurrentResult({
           connected: successModels.length > 0,
           connectTime: avgLatency,
-          models: modelResults,
+          models: probedResults,
+          probeState:
+            successModels.length > 0 ? 'reachable' : probedResults[0]?.probeState || 'unknown',
           summary: {
             success: successModels.length,
-            failed: modelResults.length - successModels.length,
+            failed: probedResults.length - successModels.length,
             avgLatency,
           },
           config: {
@@ -349,6 +375,7 @@ export const useTestStore = defineStore('test', {
             connectTime: result.connectTime,
             models: result.models,
             summary: result.summary,
+            ...(result.probeState ? { probeState: result.probeState } : {}),
             ...(result.untested ? { untested: true } : {}),
           },
         }

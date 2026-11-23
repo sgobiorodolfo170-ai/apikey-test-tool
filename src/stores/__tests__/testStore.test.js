@@ -67,6 +67,8 @@ describe('testStore.testSingleModel', () => {
     expect(store.currentResult.connectTime).toBe(123)
     expect(store.currentResult.models).toHaveLength(1)
     expect(store.currentResult.summary).toEqual({ success: 1, failed: 0, avgLatency: 123 })
+    expect(store.currentResult.probeState).toBe('reachable')
+    expect(store.currentResult.models[0].probeState).toBe('reachable')
     expect(store.hasResult).toBe(true)
   })
 

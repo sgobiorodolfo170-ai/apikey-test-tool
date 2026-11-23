@@ -1,14 +1,9 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import http from 'node:http'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const relay = require('../../electron/relay.cjs')
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function makeProvider(overrides = {}) {
   return {
@@ -20,273 +15,299 @@ function makeProvider(overrides = {}) {
     enabled: true,
     quota: {
       enabled: true,
-      metric: 'request',
-      limit5h: 100,
-      limitWeek: 1000,
-      confirmStrikes: 3,
-      confirmIntervalMinutes: 0.002,
-      confirmSpanMinutes: 1,
+      confirmStrikes: 1,
+      confirmIntervalMinutes: 0,
+      confirmSpanMinutes: 9,
+      burstWindowMinutes: 10,
+      burstStrikes: 0,
+      warmupMinutes: 5,
     },
     ...overrides,
   }
 }
 
-describe('429 撞墙判定（修复饥饿与误锁）', () => {
-  beforeEach(() => relay.clearRuntime())
-
-  it('高频 429 不再因刷新计时而永远累计不到 strikes', async () => {
-    const provider = makeProvider()
-    // 每 150ms 撞一次 429（间隔 120ms 的规则要求）：第一次计数，之后应能继续累计
-    for (let index = 0; index < 3; index += 1) {
-      relay.noteQuotaHit(provider)
-      await sleep(150)
-    }
-    const lock = relay.quotaLocked(provider)
-    expect(lock).toBeTruthy()
-    expect(lock.level).toBe('5h')
-  })
-
-  it('跨超过观察窗的孤立 429 不会累计误锁', async () => {
-    const provider = makeProvider({
-      quota: {
-        ...makeProvider().quota,
-        confirmSpanMinutes: 0.01, // 600ms 观察窗
-      },
-    })
-
-    relay.noteQuotaHit(provider)
-    await sleep(700)
-    relay.noteQuotaHit(provider)
-    await sleep(700)
-    relay.noteQuotaHit(provider)
-
-    expect(relay.quotaLocked(provider)).toBeNull()
-  })
-
-  it('上游明确返回额度耗尽时直接锁定，不等多次确认', () => {
-    const provider = makeProvider()
-    const lock = relay.noteQuotaHit(provider, undefined, { signal: 'quota' })
-    expect(lock).toBeTruthy()
-    expect(relay.quotaBlocked(provider)?.locked).toBe(true)
-  })
-})
-
-describe('额度计数口径与按模型/共享组', () => {
-  beforeEach(() => relay.clearRuntime())
-
-  it('只统计 2xx：404 / 400 / 429 都不占请求次数', () => {
-    const provider = makeProvider()
-    relay.recordQuota(provider, { status: 404 })
-    relay.recordQuota(provider, { status: 400 })
-    relay.recordQuota(provider, { status: 429 })
-    relay.recordQuota(provider, { status: 500 })
-    expect(relay.quotaUsageOf(provider).used5h).toBe(0)
-
-    relay.recordQuota(provider, { status: 200 })
-    expect(relay.quotaUsageOf(provider).used5h).toBe(1)
-  })
-
-  it('按 Key 配置共享组：同组共享、异组独立', () => {
-    const provider = makeProvider({
-      apiKeys: ['sk-1', 'sk-2', 'sk-3'],
-      quota: {
-        ...makeProvider().quota,
-        group: '',
-        limit5h: 1,
-        keyGroups: { 'sk-1': 'account-a', 'sk-2': 'account-a', 'sk-3': 'account-b' },
-      },
-    })
-
-    relay.recordQuota({ ...provider, apiKey: 'sk-1' }, { status: 200 })
-
-    expect(relay.quotaBlocked({ ...provider, apiKey: 'sk-1' })).not.toBeNull()
-    expect(relay.quotaBlocked({ ...provider, apiKey: 'sk-2' })).not.toBeNull()
-    expect(relay.quotaBlocked({ ...provider, apiKey: 'sk-3' })).toBeNull()
-  })
-
-  it('Key 没有单独配置组时回落到默认组', () => {
-    const provider = makeProvider({
-      apiKey: 'sk-x',
-      quota: { ...makeProvider().quota, group: 'default-group', limit5h: 1 },
-    })
-
-    relay.recordQuota(provider, { status: 200 })
-    expect(relay.quotaBlocked(provider)).not.toBeNull()
-  })
-
-  it('同名共享组不会跨提供商合并', () => {
-    const first = makeProvider({
-      id: 'p1',
-      apiKey: 'sk-1',
-      quota: { ...makeProvider().quota, group: 'same-name', limit5h: 1 },
-    })
-    const second = { ...first, id: 'p2', apiKey: 'sk-2' }
-
-    relay.recordQuota(first, { status: 200 })
-
-    expect(relay.quotaBlocked(first)).not.toBeNull()
-    expect(relay.quotaBlocked(second)).toBeNull()
-  })
-
-  it('按模型独立额度：低额度模型先被本地拦住，不影响其它模型', () => {
-    const provider = makeProvider({
-      models: ['flash-lite', 'deepseek-v4-flash'],
-      quota: {
-        ...makeProvider().quota,
-        perModel: true,
-        limit5h: 1500,
-        limitWeek: 15000,
-        modelLimits: { 'deepseek-v4-flash': { limit5h: 1, limitWeek: 10 } },
-      },
-    })
-
-    relay.recordQuota(provider, { status: 200, model: 'deepseek-v4-flash' })
-
-    expect(relay.quotaBlocked(provider, 'deepseek-v4-flash')).not.toBeNull()
-    expect(relay.quotaBlocked(provider, 'flash-lite')).toBeNull()
-    expect(relay.quotaLimitOf(provider, 'deepseek-v4-flash').limit5h).toBe(1)
-    expect(relay.quotaLimitOf(provider, 'flash-lite').limit5h).toBe(1500)
-  })
-
-  it('共享额度组：同组的多把 Key 共用一个池', () => {
-    const first = makeProvider({
-      apiKey: 'sk-1',
-      quota: { ...makeProvider().quota, group: 'sensenova-account-a', limit5h: 1 },
-    })
-    const second = { ...first, apiKey: 'sk-2' }
-
-    relay.recordQuota(first, { status: 200 })
-
-    expect(relay.quotaBlocked(first)).not.toBeNull()
-    expect(relay.quotaBlocked(second)).not.toBeNull()
-    // 不同组仍是独立池
-    const other = { ...second, quota: { ...second.quota, group: 'other-account' } }
-    expect(relay.quotaBlocked(other)).toBeNull()
-  })
-})
-
-describe('多 Key 剩余额度调度', () => {
-  beforeEach(() => relay.clearRuntime())
-
-  it('水位越低的 Key 权重越低，顺序优先选剩余额度多的 Key', () => {
-    const provider = makeProvider({
-      apiKeys: ['sk-low', 'sk-high'],
-      quota: { ...makeProvider().quota, limit5h: 100, limitWeek: 1000, reserveRatio: 0 },
-    })
-
-    // 把 sk-low 打到只剩 10%
-    for (let index = 0; index < 90; index += 1) {
-      relay.recordQuota({ ...provider, apiKey: 'sk-low' }, { status: 200 })
-    }
-
-    const low = relay.quotaWeightOf({ ...provider, apiKey: 'sk-low' })
-    const high = relay.quotaWeightOf({ ...provider, apiKey: 'sk-high' })
-    expect(high).toBeGreaterThan(low)
-
-    const order = relay.orderedKeysOf(provider)
-    expect(order[0]).toBe('sk-high')
-  })
-
-  it('未开启额度窗口时仍保持普通轮询', () => {
-    const provider = makeProvider({ quota: undefined, apiKey: '', apiKeys: ['k1', 'k2'] })
-    expect(relay.orderedKeysOf(provider)).toEqual(['k1', 'k2'])
-    expect(relay.orderedKeysOf(provider)).toEqual(['k2', 'k1'])
-  })
-})
-
-describe('Retry-After 与 429 信号解析', () => {
-  it('解析秒数与 HTTP-date', () => {
-    expect(relay.parseRetryAfterMs('120')).toBe(120000)
-    expect(relay.parseRetryAfterMs(undefined)).toBe(0)
-    expect(relay.parseRetryAfterMs('not-a-date')).toBe(0)
-    const httpDate = new Date(Date.now() + 5000).toUTCString()
-    expect(relay.parseRetryAfterMs(httpDate)).toBeGreaterThan(3000)
-  })
-
-  it('区分额度耗尽与瞬时限流', () => {
-    expect(relay.parse429Signal(JSON.stringify({ error: { code: 'insufficient_quota' } }))).toBe(
-      'quota',
-    )
-    expect(
-      relay.parse429Signal(JSON.stringify({ error: { message: 'rate limit exceeded' } })),
-    ).toBe('rate')
-    expect(relay.parse429Signal('plain text')).toBe('')
-  })
-})
-
-describe('额度锁持久化与半开恢复', () => {
-  const tmpFile = path.join(os.tmpdir(), `relay-quota-${process.pid}-${Date.now()}.json`)
-  const emptyFile = path.join(os.tmpdir(), `relay-empty-${process.pid}-${Date.now()}.json`)
-
-  afterAll(() => {
+describe('真实 429 分级锁定', () => {
+  beforeEach(() => {
     relay.clearRuntime()
-    relay.attachStorage(emptyFile)
-    for (const file of [tmpFile, emptyFile]) {
-      try {
-        fs.unlinkSync(file)
-      } catch {
-        // 文件可能未创建
-      }
-    }
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T10:00:00.000Z'))
   })
 
-  it('恢复上次的 5h 等级：半开探测失败时升级为周锁', () => {
-    const provider = makeProvider()
-    const key = relay.quotaPoolKeyOf(provider)
-    fs.writeFileSync(
-      tmpFile,
-      JSON.stringify({
-        locks: [[key, { until: Date.now() - 1000, level: '5h', at: Date.now() - 600000 }]],
-        levels: [[key, { level: '5h', at: Date.now() - 600000 }]],
-      }),
-      'utf8',
-    )
-    relay.attachStorage(tmpFile)
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
-    // 过期锁会被清掉并进入半开探测
-    expect(relay.quotaLocked(provider)).toBeNull()
-    // 探测请求再次 429：直接升级为周锁
-    const lock = relay.noteQuotaHit(provider)
-    expect(lock).toBeTruthy()
-    expect(lock.level).toBe('week')
-    expect(relay.quotaBlocked(provider)?.window).toBe('week')
+  it('首次确认只锁 5 分钟探测，不直接锁 5 小时', () => {
+    const provider = makeProvider()
+    const lock = relay.noteQuotaHit(provider, 'm')
+
+    expect(lock.level).toBe('probe')
+    expect(relay.quotaBlocked(provider, 'm')).toMatchObject({
+      window: 'probe',
+      locked: true,
+    })
+    // 5 分钟探测锁，不是 5 小时
+    expect(relay.quotaBlocked(provider, 'm').retryAfter).toBeLessThanOrEqual(5 * 60)
+    expect(relay.quotaBlocked(provider, 'm').retryAfter).toBeGreaterThan(4 * 60)
+  })
+
+  it('探测仍失败升级 5 小时，5 小时后仍失败升级 7 天', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm')
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1000)
+    // 探测锁到期：进入半开探测，下一次真实 429 会升级
+    expect(relay.quotaLocked(provider, 'm')).toBeNull()
+    const fiveHour = relay.noteQuotaHit(provider, 'm')
+    expect(fiveHour.level).toBe('5h')
+
+    vi.advanceTimersByTime(5 * 60 * 60 * 1000 + 1000)
+    expect(relay.quotaLocked(provider, 'm')).toBeNull()
+    const week = relay.noteQuotaHit(provider, 'm')
+    expect(week.level).toBe('week')
+  })
+
+  it('等级记忆随时间衰减：长期无流量的 Key 重新从 5 分钟探测开始', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm')
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1000)
+    const fiveHour = relay.noteQuotaHit(provider, 'm')
+    expect(fiveHour.level).toBe('5h')
+
+    // 超过 5 小时窗口的 2 倍无任何真实成功/429 → 陈旧记忆衰减
+    vi.advanceTimersByTime(10 * 60 * 60 * 1000 + 1000)
+    const fresh = relay.noteQuotaHit(provider, 'm')
+    expect(fresh.level).toBe('probe')
+  })
+
+  it('真实成功立即清除锁定与升级等级', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm')
+    expect(relay.quotaBlocked(provider, 'm')).not.toBeNull()
+
+    relay.markSuccess(provider, 'm')
+
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
+    expect(relay.quotaLocked(provider, 'm')).toBeNull()
+  })
+
+  it('同一 Key 的不同模型各自锁定，不互相影响', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm1')
+
+    expect(relay.quotaBlocked(provider, 'm1')).not.toBeNull()
+    expect(relay.quotaBlocked(provider, 'm2')).toBeNull()
+  })
+
+  it('共享账号组内的 Key 共享真实 429 锁定', () => {
+    const first = makeProvider({
+      apiKey: 'sk-1',
+      quota: { ...makeProvider().quota, group: 'acct' },
+    })
+    const second = makeProvider({
+      apiKey: 'sk-2',
+      quota: { ...makeProvider().quota, group: 'acct' },
+    })
+
+    relay.noteQuotaHit(first, 'm')
+
+    expect(relay.quotaBlocked(first, 'm')).not.toBeNull()
+    expect(relay.quotaBlocked(second, 'm')).not.toBeNull()
+  })
+
+  it('不同共享组不共享锁定', () => {
+    const first = makeProvider({ apiKey: 'sk-1', quota: { ...makeProvider().quota, group: 'a' } })
+    const second = makeProvider({ apiKey: 'sk-2', quota: { ...makeProvider().quota, group: 'b' } })
+
+    relay.noteQuotaHit(first, 'm')
+
+    expect(relay.quotaBlocked(second, 'm')).toBeNull()
+  })
+
+  it('手动解锁清掉锁定与等级，真实调用可重新探测', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm')
+    expect(relay.quotaBlocked(provider, 'm')).not.toBeNull()
+
+    const cleared = relay.unlockQuota(provider.id)
+    expect(cleared).toBeGreaterThan(0)
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
+    expect(relay.quotaLocked(provider, 'm')).toBeNull()
+  })
+
+  it('分钟级限流 429 不触发额度锁定', () => {
+    const provider = makeProvider()
+    const lock = relay.noteQuotaHit(provider, 'm', { signal: 'rate' })
+    expect(lock).toBeNull()
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
+  })
+
+  it('跨过观察窗的孤立 429 不累计误锁', () => {
+    const provider = makeProvider({
+      quota: { ...makeProvider().quota, confirmStrikes: 3, confirmIntervalMinutes: 1 },
+    })
+    // 第 1、2 次：确认点不足 3 个，不锁定
+    expect(relay.noteQuotaHit(provider, 'm')).toBeNull()
+    vi.advanceTimersByTime(4 * 60 * 1000)
+    expect(relay.noteQuotaHit(provider, 'm')).toBeNull()
+    // 跳到观察窗（9 分钟）之外再出现孤立 429：旧确认点全部过期，重新计数
+    vi.advanceTimersByTime(16 * 60 * 1000)
+    expect(relay.noteQuotaHit(provider, 'm')).toBeNull()
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
+  })
+
+  it('确认间隔内的高频 429 不累计确认点，防止把瞬时限流判成额度耗尽', () => {
+    const provider = makeProvider({
+      quota: { ...makeProvider().quota, confirmStrikes: 3, confirmIntervalMinutes: 2 },
+    })
+    // 30 秒内连打 10 次：只有第 1 次计入确认点，其余被确认间隔拦下
+    for (let i = 0; i < 10; i++) {
+      expect(relay.noteQuotaHit(provider, 'm')).toBeNull()
+      vi.advanceTimersByTime(3 * 1000)
+    }
+    expect(relay.quotaBlocked(provider, 'm')).toBeNull()
+  })
+
+  it('商汤 429 速率/额度同码：明确 quota 信号也只走 5 分钟探测，不直接锁 5 小时', () => {
+    // 默认 baseUrl 就是 token.sensenova.cn，验证按域名识别
+    const provider = makeProvider()
+    const lock = relay.noteQuotaHit(provider, 'm', { signal: 'quota' })
+
+    expect(lock.level).toBe('probe')
+    expect(relay.quotaBlocked(provider, 'm').retryAfter).toBeLessThanOrEqual(5 * 60)
+    expect(relay.quotaBlocked(provider, 'm').retryAfter).toBeGreaterThan(4 * 60)
+  })
+
+  it('presetId = sensenova 的提供商同样降级 quota 信号', () => {
+    const provider = makeProvider({
+      presetId: 'sensenova',
+      baseUrl: 'https://custom.example.com/v1',
+    })
+    const lock = relay.noteQuotaHit(provider, 'm', { signal: 'quota' })
+
+    expect(lock.level).toBe('probe')
+  })
+
+  it('非商汤上游明确 quota 信号仍直接锁 5 小时', () => {
+    const provider = makeProvider({ baseUrl: 'https://discovery-api.intern-ai.org.cn/v1' })
+    const lock = relay.noteQuotaHit(provider, 'm', { signal: 'quota' })
+
+    expect(lock.level).toBe('5h')
+    expect(relay.quotaBlocked(provider, 'm').retryAfter).toBeGreaterThan(4 * 60 * 60)
+  })
+
+  it('商汤探测锁到期后的真实 429 仍正常升级 5 小时', () => {
+    const provider = makeProvider()
+    relay.noteQuotaHit(provider, 'm', { signal: 'quota' })
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1000)
+    expect(relay.quotaLocked(provider, 'm')).toBeNull()
+    const fiveHour = relay.noteQuotaHit(provider, 'm', { signal: 'quota' })
+    expect(fiveHour.level).toBe('5h')
   })
 })
 
-describe('上游 429 透传与冷却（端到端）', () => {
+describe('真实调用不受本地计数限制', () => {
   let upstream
   let upstreamPort
 
-  afterAll(() => {
-    relay.stop()
-    upstream?.close()
-  })
-
-  it('把 Retry-After 透传给客户端，并用于本地冷却', async () => {
+  beforeAll(async () => {
     upstream = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
-        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '2' })
-        res.end(JSON.stringify({ error: { code: 'rate_limit_exceeded', message: 'slow down' } }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
       })
     })
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
     upstreamPort = upstream.address().port
+  })
 
+  afterAll(async () => {
+    await relay.stop()
+    upstream?.close()
+    relay.clearRuntime()
+  })
+
+  it('连续成功不会因为本地计数被拦住', async () => {
+    relay.clearRuntime()
+    const info = await relay.start({
+      port: 0,
+      providers: [makeProvider({ baseUrl: `http://127.0.0.1:${upstreamPort}` })],
+    })
+    relay.clearLogs()
+
+    for (let index = 0; index < 5; index += 1) {
+      const response = await fetch(`http://127.0.0.1:${info.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'm', messages: [] }),
+      })
+      expect(response.status).toBe(200)
+      await response.json()
+    }
+
+    expect(relay.quotaBlocked(makeProvider())).toBeNull()
+  })
+})
+
+describe('parse429Signal：区分额度耗尽与瞬时限流', () => {
+  const signalOf = (payload) => relay.parse429Signal(JSON.stringify(payload))
+
+  it('额度类错误码 → quota', () => {
+    expect(signalOf({ error: { code: 'insufficient_quota' } })).toBe('quota')
+    expect(signalOf({ error: { type: 'quota_exceeded_error' } })).toBe('quota')
+    expect(signalOf({ code: 'insufficient_balance' })).toBe('quota')
+    expect(signalOf({ error: { code: '', message: 'billing limit reached' } })).toBe('quota')
+  })
+
+  it('限流类错误码 → rate', () => {
+    expect(signalOf({ error: { code: 'rate_limit_exceeded' } })).toBe('rate')
+    expect(signalOf({ error: { code: 'throttling' } })).toBe('rate')
+    expect(signalOf({ error: { message: 'Too Many Requests' } })).toBe('rate')
+  })
+
+  it('无法区分时返回空串，交由连续确认判定', () => {
+    expect(signalOf({ error: { code: 'invalid_request_error' } })).toBe('')
+    expect(relay.parse429Signal('not json')).toBe('')
+    expect(relay.parse429Signal('')).toBe('')
+  })
+})
+
+describe('429 额度锁定日志（端到端）', () => {
+  let upstream
+  let upstreamPort
+
+  beforeAll(async () => {
+    upstream = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(429, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'quota_exceeded', message: 'quota exhausted' } }))
+      })
+    })
+    await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+    upstreamPort = upstream.address().port
+  })
+
+  afterAll(async () => {
+    await relay.stop()
+    upstream?.close()
+    relay.clearRuntime()
+  })
+
+  it('锁定额度时同一次尝试只写一条日志，并合并额度信息', async () => {
     relay.clearRuntime()
     const info = await relay.start({
       port: 0,
       providers: [
         makeProvider({
           baseUrl: `http://127.0.0.1:${upstreamPort}`,
-          quota: {
-            ...makeProvider().quota,
-            confirmIntervalMinutes: 1,
-            confirmSpanMinutes: 9,
-          },
+          apiKey: 'sk-lock',
         }),
       ],
     })
+    relay.clearLogs()
 
     const response = await fetch(`http://127.0.0.1:${info.port}/v1/chat/completions`, {
       method: 'POST',
@@ -296,12 +317,10 @@ describe('上游 429 透传与冷却（端到端）', () => {
     await response.json()
 
     expect(response.status).toBe(429)
-    expect(response.headers.get('retry-after')).toBe('2')
-
-    const cooling = relay.getStatus().cooling.find((item) => item.key.includes('sk-a'))
-    expect(cooling).toBeTruthy()
-    expect(cooling.retryAfter).toBeGreaterThanOrEqual(2)
-    // 单次 429 只短冷却，不立即锁额度
-    expect(relay.quotaBlocked(makeProvider())).toBeNull()
+    const logs = relay.getLogs()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toMatchObject({ status: 429, attempt: 1, quota: true })
+    expect(logs[0].error).toContain('额度耗尽')
+    expect(relay.quotaBlocked(makeProvider({ apiKey: 'sk-lock' }), 'm')).not.toBeNull()
   })
 })

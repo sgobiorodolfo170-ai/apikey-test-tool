@@ -1,6 +1,7 @@
 import http from './http.js'
 import {
   buildUrl,
+  authHeaders,
   getErrorMessage,
   extractProviderError,
   createController,
@@ -96,7 +97,7 @@ async function openaiShape(config, signal, path, body, responseType, timeout = P
   for (const url of urls) {
     try {
       return await http.post(url, body, {
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(apiKey), 'Content-Type': 'application/json' },
         timeout,
         signal,
         responseType,
@@ -182,7 +183,7 @@ async function openaiTranscribeShape(config, signal, timeout = PROBE_TIMEOUT) {
   for (const url of urls) {
     try {
       return await http.post(url, form, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: { ...authHeaders(apiKey) },
         timeout,
         signal,
       })

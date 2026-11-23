@@ -5,7 +5,14 @@ import prettier from 'eslint-config-prettier'
 
 export default [
   {
-    ignores: ['dist/**', 'dist-app/**', 'dist-electron/**', 'build/**', 'node_modules/**'],
+    ignores: [
+      'dist/**',
+      'dist-app/**',
+      'dist-electron/**',
+      'build/**',
+      'node_modules/**',
+      'electron/generated/**',
+    ],
   },
   js.configs.recommended,
   ...pluginVue.configs['flat/recommended'],

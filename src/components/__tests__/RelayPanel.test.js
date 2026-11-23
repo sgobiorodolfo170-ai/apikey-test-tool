@@ -26,6 +26,11 @@ describe('RelayPanel', () => {
         })),
         stop: vi.fn(async () => ({ ok: true, status: { running: false } })),
         status: vi.fn(async () => ({ ok: true, status: { running: false } })),
+        unlockQuota: vi.fn(async () => ({
+          ok: true,
+          cleared: 2,
+          status: { running: false },
+        })),
         update: vi.fn(async () => ({ ok: true, status: { running: true } })),
         fetchModels: vi.fn(async () => ({ ok: true, models: ['m1', 'm2'] })),
         testKey: vi.fn(async () => ({ ok: true, models: 2, ms: 12 })),
@@ -74,7 +79,7 @@ describe('RelayPanel', () => {
   })
 
   it('prefills the form from a built-in preset', async () => {
-    await wrapper.find('select').setValue('agnes')
+    await wrapper.find('.preset-select').setValue('agnes')
     await flushPromises()
 
     const inputs = wrapper.findAll('input')
@@ -83,7 +88,7 @@ describe('RelayPanel', () => {
   })
 
   it('prefills the 端砚 preset with the discovery base url', async () => {
-    await wrapper.find('select').setValue('duanyan')
+    await wrapper.find('.preset-select').setValue('duanyan')
     await flushPromises()
 
     const baseUrl = wrapper.findAll('input').find((i) => i.element.placeholder.includes('https://'))
@@ -130,6 +135,40 @@ describe('RelayPanel', () => {
     expect(store.providers[0].models).toEqual(['m1', 'm2'])
   })
 
+  it('toggles provider enablement from the form switch', async () => {
+    await store.addProvider({ name: 'A', baseUrl: 'https://a/v1' })
+    await flushPromises()
+
+    const toggle = wrapper.find('.provider-enabled-toggle input[type="checkbox"]')
+    expect(toggle.element.checked).toBe(true)
+
+    await toggle.setValue(false)
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.flushAutoSave()
+    await flushPromises()
+
+    expect(store.providers[0].enabled).toBe(false)
+    expect(wrapper.find('.provider-enabled-toggle').text()).toContain('停用')
+  })
+
+  it('creates a provider as disabled when the switch is off', async () => {
+    await wrapper.find('.provider-add-tab').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('.provider-enabled-toggle input[type="checkbox"]').setValue(false)
+    await wrapper.find('input[placeholder="提供商名称"]').setValue('停用上游')
+    await wrapper
+      .find('input[placeholder="https://api.example.com/v1"]')
+      .setValue('https://off.example/v1')
+
+    const submit = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
+    await submit.trigger('click')
+    await flushPromises()
+
+    expect(store.providers).toHaveLength(1)
+    expect(store.providers[0].enabled).toBe(false)
+  })
+
   it('edits an existing provider and saves added keys / models', async () => {
     await store.addProvider({ name: 'A', baseUrl: 'https://a', apiKeys: ['k1'], models: ['m1'] })
     await flushPromises()
@@ -162,6 +201,109 @@ describe('RelayPanel', () => {
     expect(store.providers[0].apiKey).toBe('k1')
   })
 
+  it('saves per-key shared group changes via auto save', async () => {
+    await store.addProvider({
+      name: 'G',
+      baseUrl: 'https://g/v1',
+      apiKeys: ['k1'],
+      quota: { enabled: true, groups: ['account-a'], keyGroups: {} },
+    })
+    await flushPromises()
+
+    // 每把 Key 的共享组下拉只在自动额度保护开启时出现
+    const groupSelect = wrapper
+      .findAll('select')
+      .find((s) => s.findAll('option').some((o) => o.element.value === 'account-a'))
+    expect(groupSelect).toBeDefined()
+    await groupSelect.setValue('account-a')
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.flushAutoSave()
+    await flushPromises()
+
+    expect(store.providers[0].quota.keyGroups).toEqual({ k1: 'account-a' })
+  })
+
+  it('flushes pending auto save when the panel unmounts', async () => {
+    await store.addProvider({ name: 'H', baseUrl: 'https://h/v1', apiKeys: ['k1'] })
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="提供商名称"]').setValue('H2')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+    await flushPromises()
+
+    expect(store.providers[0].name).toBe('H2')
+  })
+
+  it('drops legacy credit / per-model quota fields when saving', async () => {
+    await store.addProvider({
+      name: '端砚',
+      baseUrl: 'https://d/v1',
+      apiKeys: ['k1'],
+      models: ['glm-5.3'],
+      presetId: 'duanyan',
+      strategy: 'duanyan',
+      quota: {
+        enabled: true,
+        metric: 'credit',
+        windowMode: 'calendar-month',
+        limitMonth: 10,
+        creditsPerMillionTokens: 8,
+        perModel: false,
+        modelRates: { 'glm-5.3': 28 },
+      },
+    })
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="提供商名称"]').setValue('端砚2')
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.flushAutoSave()
+    await flushPromises()
+
+    // 旧的积分 / 墨点 / 按模型单价字段不再保存，额度只看真实响应
+    expect(store.providers[0].quota.enabled).toBe(true)
+    expect(store.providers[0].quota).not.toHaveProperty('metric')
+    expect(store.providers[0].quota).not.toHaveProperty('perModel')
+    expect(store.providers[0].quota).not.toHaveProperty('modelRates')
+    expect(store.providers[0].quota).not.toHaveProperty('limitMonth')
+  })
+
+  it('unlocks quota locks from the quota row', async () => {
+    const provider = await store.addProvider({
+      name: '端砚',
+      baseUrl: 'https://d/v1',
+      apiKeys: ['k1'],
+      models: ['glm-5.3'],
+      quota: { enabled: true, confirmStrikes: 3 },
+    })
+    store.running = true
+    store.status = {
+      running: true,
+      quota: [
+        {
+          id: `${provider.id}#k1`,
+          providerId: provider.id,
+          keyTail: 'k1',
+          state: 'probe',
+          window: 'probe',
+          retryAfter: 120,
+          calls5h: 1,
+          success5h: 0,
+          locked: true,
+          exhausted: true,
+        },
+      ],
+    }
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find((b) => b.text() === '解除额度锁定')
+    expect(button).toBeTruthy()
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(window.electronAPI.relay.unlockQuota).toHaveBeenCalledWith(provider.id)
+  })
+
   it('submits model aliases from the form', async () => {
     await wrapper.find('input[placeholder="提供商名称"]').setValue('A')
     await wrapper.find('input[placeholder="https://api.example.com/v1"]').setValue('https://a/v1')
@@ -181,7 +323,7 @@ describe('RelayPanel', () => {
   })
 
   it('adds a provider from the form', async () => {
-    await wrapper.find('select').setValue('sensenova')
+    await wrapper.find('.preset-select').setValue('sensenova')
     await flushPromises()
 
     const addButton = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
@@ -194,7 +336,7 @@ describe('RelayPanel', () => {
   })
 
   it('prefills the 商汤 preset with the token base url', async () => {
-    await wrapper.find('select').setValue('sensenova')
+    await wrapper.find('.preset-select').setValue('sensenova')
     await flushPromises()
 
     const baseUrl = wrapper.findAll('input').find((i) => i.element.placeholder.includes('https://'))
@@ -390,8 +532,34 @@ describe('RelayPanel', () => {
     expect(window.electronAPI.relay.testKey).toHaveBeenCalledWith({
       baseUrl: 'https://multi.example/v1',
       apiKey: 'sk-1',
+      model: '',
     })
     expect(wrapper.findAll('span').filter((s) => s.text() === '✓ 12ms')).toHaveLength(2)
+  })
+
+  it('tests every api key against the selected model', async () => {
+    await wrapper
+      .find('input[placeholder="https://api.example.com/v1"]')
+      .setValue('https://multi.example/v1')
+    await wrapper.findAll('input[type="password"]')[0].setValue('sk-1')
+
+    // 表单里已填的模型进入测通模型下拉，选中后一键测通携带该模型
+    await wrapper.findAll('input[placeholder="模型名，如 gpt-4o"]')[0].setValue('gpt-test')
+    const modelSelect = wrapper
+      .findAll('select')
+      .find((s) => s.findAll('option').some((o) => o.element.value === 'gpt-test'))
+    expect(modelSelect).toBeDefined()
+    await modelSelect.setValue('gpt-test')
+
+    const testButton = wrapper.findAll('button').find((b) => b.text() === '一键测通')
+    await testButton.trigger('click')
+    await flushPromises()
+
+    expect(window.electronAPI.relay.testKey).toHaveBeenCalledWith({
+      baseUrl: 'https://multi.example/v1',
+      apiKey: 'sk-1',
+      model: 'gpt-test',
+    })
   })
 })
 
@@ -515,50 +683,56 @@ describe('RelayPanel 限流展示', () => {
     expect(wrapper.text()).toContain('已设 1 个')
   })
 
-  it('applies preset quota and shows the 5h / 7d limits', async () => {
+  it('applies preset auto protection without count / credit limits', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
     await flushPromises()
 
-    await wrapper.find('select').setValue('sensenova')
+    await wrapper.find('.preset-select').setValue('sensenova')
     await flushPromises()
 
-    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('额度窗口'))
+    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('自动额度保护'))
     expect(quotaLabel).toBeTruthy()
     expect(quotaLabel.find('input[type="checkbox"]').element.checked).toBe(true)
     const numbers = wrapper.findAll('input[type="number"]').map((item) => item.element.value)
-    expect(numbers).toContain('1500')
-    expect(numbers).toContain('15000')
+    expect(numbers).toContain('3')
+    expect(numbers).toContain('9')
+    expect(numbers).not.toContain('1500')
+    expect(numbers).not.toContain('15000')
   })
 
-  it('applies per-model limits from the sensenova preset', async () => {
+  it('saves sensenova auto protection and keeps real request limits', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = useRelayStore()
     const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
     await flushPromises()
 
-    await wrapper.find('select').setValue('sensenova')
+    await wrapper.find('.preset-select').setValue('sensenova')
     await flushPromises()
-
-    const perModel = wrapper.findAll('label').find((item) => item.text().includes('按模型独立'))
-    expect(perModel).toBeTruthy()
-    expect(perModel.find('input[type="checkbox"]').element.checked).toBe(true)
-    expect(wrapper.text()).toContain('deepseek-v4-flash')
 
     const add = wrapper.findAll('button').find((b) => b.text() === '添加提供商')
     await add.trigger('click')
     await flushPromises()
 
     expect(store.providers).toHaveLength(1)
-    expect(store.providers[0].quota.perModel).toBe(true)
-    expect(store.providers[0].quota.modelLimits['deepseek-v4-flash']).toEqual({
-      limit5h: 150,
-      limitWeek: 1500,
+    expect(store.providers[0].quota).toMatchObject({
+      enabled: true,
+      confirmStrikes: 3,
+      confirmIntervalMinutes: 1,
+      confirmSpanMinutes: 9,
     })
+    expect(store.providers[0].quota).not.toHaveProperty('perModel')
+    expect(store.providers[0].quota).not.toHaveProperty('modelLimits')
     expect(store.providers[0].maxConcurrency).toBe(2)
     expect(store.providers[0].rpmLimit).toBe(15)
+    // 商汤预置默认开启自动探测：官方无余额 API，用最小化真实调用推断额度
+    expect(store.providers[0].autoProbe).toEqual({
+      enabled: true,
+      intervalMinutes: 30,
+      model: 'sensenova-6.8-flash-lite',
+    })
   })
 
   it('collapses extra shared groups until 显示更多 is clicked', async () => {
@@ -568,7 +742,7 @@ describe('RelayPanel 限流展示', () => {
     const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
     await flushPromises()
 
-    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('额度窗口'))
+    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('自动额度保护'))
     await quotaLabel.find('input[type="checkbox"]').setValue(true)
     await flushPromises()
 
@@ -608,6 +782,84 @@ describe('RelayPanel 限流展示', () => {
     expect(store.providers).toHaveLength(0)
   })
 
+  it('collapses per-key quota details behind 展开明细', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useRelayStore()
+    const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await store.addProvider({
+      name: 'A',
+      baseUrl: 'https://a',
+      apiKeys: ['k1', 'k2'],
+      quota: { enabled: true, confirmStrikes: 3 },
+    })
+    const provider = store.providers[0]
+    store.running = true
+    store.status = {
+      quota: [
+        {
+          id: 'q1',
+          providerId: provider.id,
+          keyTail: '111111',
+          model: '',
+          state: 'ok',
+          calls5h: 1,
+          success5h: 1,
+          rateLimited5h: 0,
+          lastStatus: 200,
+          locked: false,
+          exhausted: false,
+        },
+        {
+          id: 'q2',
+          providerId: provider.id,
+          keyTail: '222222',
+          model: '',
+          state: 'ok',
+          calls5h: 3,
+          success5h: 2,
+          rateLimited5h: 1,
+          lastStatus: 429,
+          locked: false,
+          exhausted: false,
+        },
+      ],
+    }
+
+    await flushPromises()
+
+    // 编辑页不再铺开逐 Key 额度
+    expect(wrapper.text()).not.toContain('…111111')
+
+    // 详情只给一行汇总
+    const summary = wrapper.vm.quotaSummary(provider)
+    expect(summary).toContain('2 把 Key')
+    expect(summary).toContain('全部正常')
+    expect(summary).toContain('最近 5h 4 次')
+    expect(summary).not.toContain('111111')
+
+    // 明细文案：展示真实调用与锁定状态，不再显示积分 / 次数上限
+    expect(
+      wrapper.vm.quotaItemLabel({
+        state: 'ok',
+        calls5h: 1,
+        success5h: 1,
+        lastStatus: 200,
+      }),
+    ).toBe('正常 · 最近 5h 1 次 / 成功 1 · 最近响应 200')
+    expect(
+      wrapper.vm.quotaItemLabel({
+        state: '5h',
+        locked: true,
+        retryAfter: 300,
+        calls5h: 2,
+        success5h: 0,
+      }),
+    ).toBe('5 小时锁定 · 5 分钟后重试 · 最近 5h 2 次 / 成功 0')
+  })
+
   it('manages shared groups and assigns keys to them', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -615,8 +867,8 @@ describe('RelayPanel 限流展示', () => {
     const wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
     await flushPromises()
 
-    // 启用额度窗口后，API Key 区域才出现共享组组件
-    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('额度窗口'))
+    // 启用自动额度保护后，API Key 区域才出现共享组组件
+    const quotaLabel = wrapper.findAll('label').find((item) => item.text().includes('自动额度保护'))
     await quotaLabel.find('input[type="checkbox"]').setValue(true)
     await flushPromises()
 
@@ -668,5 +920,104 @@ describe('RelayPanel 限流展示', () => {
       'sk-1': 'account-a',
       'sk-2': 'account-a',
     })
+  })
+})
+
+describe('RelayPanel 默认上游与局域网', () => {
+  let wrapper
+  let store
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    window.electronAPI = {
+      relay: {
+        start: vi.fn(async ({ port }) => ({
+          ok: true,
+          port,
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          status: { running: true, port },
+        })),
+        stop: vi.fn(async () => ({ ok: true, status: { running: false } })),
+        status: vi.fn(async () => ({ ok: true, status: { running: false } })),
+        update: vi.fn(async () => ({ ok: true, status: { running: true } })),
+        fetchModels: vi.fn(async () => ({ ok: true, models: [] })),
+        logs: vi.fn(async () => ({ ok: true, logs: [] })),
+        clearLogs: vi.fn(async () => ({ ok: true, logs: [] })),
+      },
+    }
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    store = useRelayStore()
+    wrapper = mount(RelayPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+  })
+
+  const lanCheckbox = () =>
+    wrapper
+      .findAll('label')
+      .find((item) => item.text().includes('局域网访问'))
+      .find('input[type="checkbox"]')
+
+  it('lists providers in the default-provider select and writes only the id', async () => {
+    const provider = await store.addProvider({ name: 'A', baseUrl: 'https://a', apiKey: 'sk-x' })
+    await flushPromises()
+
+    const select = wrapper.find('.default-provider-select')
+    expect(select.exists()).toBe(true)
+    expect(select.findAll('option').some((o) => o.element.value === provider.id)).toBe(true)
+
+    await select.setValue(provider.id)
+    await flushPromises()
+
+    expect(store.defaultProviderId).toBe(provider.id)
+    // 设为默认不改凭据
+    expect(store.providers[0].apiKey).toBe('sk-x')
+  })
+
+  it('refuses to enable lan without an access key', async () => {
+    await lanCheckbox().setValue(true)
+    await flushPromises()
+
+    expect(store.lanEnabled).toBe(false)
+    expect(lanCheckbox().element.checked).toBe(false)
+  })
+
+  it('enables lan with an access key and shows the risk warning', async () => {
+    await store.generateApiKey()
+    await flushPromises()
+
+    await lanCheckbox().setValue(true)
+    await flushPromises()
+
+    expect(store.lanEnabled).toBe(true)
+    expect(wrapper.text()).toContain('局域网访问已开启')
+  })
+
+  it('lists filtered lan endpoints when active', async () => {
+    await store.generateApiKey()
+    store.lanEnabled = true
+    store.running = true
+    store.status = {
+      running: true,
+      lan: {
+        enabled: true,
+        active: true,
+        addresses: [{ name: '以太网', address: '192.168.1.5', physical: true }],
+      },
+    }
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('http://192.168.1.5:8787/v1')
+    expect(wrapper.text()).toContain('以太网')
+  })
+
+  it('hints a restart when lan is on but still listening on loopback', async () => {
+    await store.generateApiKey()
+    store.lanEnabled = true
+    store.running = true
+    store.status = { running: true, lan: { enabled: true, active: false, addresses: [] } }
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('停止并重新启动中转站')
   })
 })

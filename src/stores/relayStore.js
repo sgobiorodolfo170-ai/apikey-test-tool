@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { readRelay, saveRelay } from '../utils/storage.js'
-import { normalizeQuota } from '../utils/relayConfig.js'
+import { normalizeAutoProbe, normalizeQuota } from '../utils/relayConfig.js'
 import { RELAY_PRESETS } from '../data/relayPresets.js'
 import { useToastStore } from './toastStore.js'
 
@@ -46,6 +46,10 @@ export const useRelayStore = defineStore('relay', {
     cacheTtlMinutes: 5,
     cacheMaxEntries: 200,
     autoStart: true,
+    // 模型未命中时回退到的默认上游（空＝未命中即 404，行为不变）
+    defaultProviderId: '',
+    // 局域网访问默认关闭；开启必须先设访问 Key，且需重启中转站生效
+    lanEnabled: false,
     providers: [],
     running: false,
     status: null,
@@ -54,10 +58,16 @@ export const useRelayStore = defineStore('relay', {
     busyProviderId: null,
     logs: [],
     logsLoading: false,
+    diagnostics: [],
+    diagnosticsLoading: false,
+    observations: [],
+    observationsLoading: false,
     stats: [],
     tokenHistory: [],
     tokenHourly: [],
     keyUsage: [],
+    // 手动「立即探测」进行中：按钮转圈，避免重复触发
+    keyProbing: false,
   }),
   getters: {
     baseUrl: (state) => state.status?.baseUrl || `http://127.0.0.1:${state.port}/v1`,
@@ -70,6 +80,11 @@ export const useRelayStore = defineStore('relay', {
       }
       return seen.size
     },
+    // 局域网是否真正生效（运行中且监听非回环）；配置开了但没重启时为 false
+    lanActive: (state) => state.status?.lan?.active === true,
+    lanAddresses: (state) => state.status?.lan?.addresses || [],
+    defaultProviderName: (state) =>
+      state.providers.find((item) => item.id === state.defaultProviderId)?.name || '',
   },
   actions: {
     async load() {
@@ -85,47 +100,64 @@ export const useRelayStore = defineStore('relay', {
         this.cacheTtlMinutes = Math.max(1, Math.round((config.cache?.ttlMs || 300000) / 60000))
         this.cacheMaxEntries = Math.max(10, Number(config.cache?.maxEntries) || 200)
         this.autoStart = config.autoStart !== false
-        // 老配置没有额度窗口：按预设补上（商汤按次数、端砚按墨点），不改动用户已填的模型
-        let quotaPatched = false
+        this.defaultProviderId = config.defaultProviderId || ''
+        this.lanEnabled = config.lan?.enabled === true
+        // 额度配置统一归一化为「真实响应自动保护」：
+        // 旧的次数 / 积分 / 墨点字段在这里被丢弃，不会继续影响判定。
+        let configPatched = false
         this.providers = (config.providers || []).map((provider) => {
           const preset = RELAY_PRESETS.find((item) => item.id === provider.presetId)
           let next = provider
-          if (!next.quota) {
-            if (!preset?.quota) return next
-            next = { ...next, quota: normalizeQuota(preset.quota) }
-            quotaPatched = true
+          // 以预设的自动保护参数为底，只保留旧配置里仍然有效的确认参数与共享组，
+          // 旧的次数 / 积分 / 墨点字段直接丢弃
+          const rawQuota = next.quota || {}
+          const mergedQuota = { ...(preset?.quota || {}) }
+          if (rawQuota.enabled !== undefined) mergedQuota.enabled = rawQuota.enabled === true
+          for (const key of [
+            'confirmStrikes',
+            'confirmIntervalMinutes',
+            'confirmSpanMinutes',
+            'burstWindowMinutes',
+            'burstStrikes',
+            'warmupMinutes',
+          ]) {
+            if (Number(rawQuota[key]) > 0) mergedQuota[key] = Number(rawQuota[key])
           }
-          // 端砚专项策略升级：旧配置还是滚动 5h/7d 时切到「自然月墨点 + 8 并发 + 30s 排队」
-          // 只改端砚（presetId = duanyan），其它提供商的配置原样保留
-          if (preset?.strategy === 'duanyan' && next.quota?.windowMode !== 'calendar-month') {
-            next = {
-              ...next,
-              strategy: 'duanyan',
-              // 4 是历史默认值，未显式改过时升级到预设的 8
-              maxConcurrency:
-                Number(next.maxConcurrency) > 0 && Number(next.maxConcurrency) !== 4
-                  ? Number(next.maxConcurrency)
-                  : preset.maxConcurrency,
-              rpmLimit: Number(next.rpmLimit) > 0 ? Number(next.rpmLimit) : preset.rpmLimit,
-              queueTimeoutMs:
-                Number(next.queueTimeoutMs) > 0
-                  ? Number(next.queueTimeoutMs)
-                  : preset.queueTimeoutMs,
-              quota: normalizeQuota({
-                ...preset.quota,
-                // 保留用户的 Key 共享组，避免升级把分组冲掉
-                group: next.quota?.group || '',
-                groups: next.quota?.groups || [],
-                keyGroups: next.quota?.keyGroups || {},
-              }),
+          if (typeof rawQuota.group === 'string') mergedQuota.group = rawQuota.group
+          if (Array.isArray(rawQuota.groups)) mergedQuota.groups = rawQuota.groups
+          if (rawQuota.keyGroups && typeof rawQuota.keyGroups === 'object') {
+            mergedQuota.keyGroups = rawQuota.keyGroups
+          }
+          const quota = normalizeQuota(mergedQuota)
+          if (!next.quota || JSON.stringify(next.quota) !== JSON.stringify(quota)) {
+            next = { ...next, quota }
+            configPatched = true
+          }
+          // 端砚专项限流仍需要 strategy 与默认并发 / RPM / 排队参数
+          if (preset?.strategy === 'duanyan') {
+            const patch = {}
+            if (next.strategy !== 'duanyan') patch.strategy = 'duanyan'
+            // 4 是历史默认值，未显式改过时升级到预设的 8。
+            // 一次性迁移：落盘 limitsMigrated 标记后不再按值判断，
+            // 避免用户刻意设置的 4 每次加载都被重置。
+            if (next.limitsMigrated !== true) {
+              if (!(Number(next.maxConcurrency) > 0) || Number(next.maxConcurrency) === 4) {
+                patch.maxConcurrency = preset.maxConcurrency
+              }
+              patch.limitsMigrated = true
             }
-            quotaPatched = true
+            if (!(Number(next.rpmLimit) > 0)) patch.rpmLimit = preset.rpmLimit
+            if (!(Number(next.queueTimeoutMs) > 0)) patch.queueTimeoutMs = preset.queueTimeoutMs
+            if (Object.keys(patch).length > 0) {
+              next = { ...next, ...patch }
+              configPatched = true
+            }
           }
           return next
         })
         this.initialized = true
-        // 补上的额度要落盘，主进程下次自启动才能带上窗口配置
-        if (quotaPatched) await this.persist()
+        // 归一化后的配置要落盘，主进程下次自启动才能带上新的自动保护参数
+        if (configPatched) await this.persist()
         await this.syncStatus()
       } catch (error) {
         useToastStore().addToast('读取中转站配置失败: ' + error.message, 'error')
@@ -147,6 +179,8 @@ export const useRelayStore = defineStore('relay', {
         clientKeys,
         sticky: this.sticky,
         autoStart: this.autoStart,
+        defaultProviderId: this.defaultProviderId,
+        lan: { enabled: this.lanEnabled },
         cache,
         providers: plain(this.providers),
       })
@@ -154,6 +188,8 @@ export const useRelayStore = defineStore('relay', {
       this.apiKey = saved.apiKey || ''
       this.clientKeys = saved.clientKeys || []
       this.sticky = saved.sticky === true
+      this.defaultProviderId = saved.defaultProviderId || ''
+      this.lanEnabled = saved.lan?.enabled === true
       this.providers = saved.providers
       // 运行中修改配置要同步给主进程，否则新模型 / 新 Key / 缓存设置不生效
       if (this.running && bridge()?.update) {
@@ -162,6 +198,8 @@ export const useRelayStore = defineStore('relay', {
           apiKey: this.apiKey,
           clientKeys,
           sticky: this.sticky,
+          defaultProviderId: this.defaultProviderId,
+          lan: { enabled: this.lanEnabled },
           cache,
           providers: plain(this.providers),
         })
@@ -183,6 +221,57 @@ export const useRelayStore = defineStore('relay', {
       }
     },
 
+    // 手动解除某个提供商的 429 额度锁：保留用量，只清锁定与等级记忆
+    async unlockQuota(providerId) {
+      const api = bridge()
+      if (!api?.unlockQuota) return
+      const result = await api.unlockQuota(providerId)
+      if (result?.status) this.status = result.status
+      const cleared = Number(result?.cleared) || 0
+      if (cleared > 0) {
+        useToastStore().addToast(`已解除 ${cleared} 条额度锁定，可重新尝试调用`, 'success')
+      } else {
+        useToastStore().addToast('没有需要解除的额度锁定', 'info')
+      }
+      await this.syncStatus()
+    },
+
+    // 手动触发一轮 Key 额度探测（全部或指定提供商）：
+    // 主进程对每把 Key 发一次最小化真实调用，结果并入 status.keyProbe 快照；
+    // 429 会走与真实流量同口径的连续确认，401/403 标记 Key 无效
+    async probeNow(providerId = '') {
+      const api = bridge()
+      if (!api?.probeKeys) {
+        useToastStore().addToast('当前环境不支持额度探测', 'error')
+        return null
+      }
+      this.keyProbing = true
+      try {
+        const result = await api.probeKeys(providerId || '')
+        if (result?.status) this.status = result.status
+        const skipped = (result?.results || []).filter((item) => !item.ok)
+        if (skipped.length > 0) {
+          const reasonText = {
+            no_keys: '没有配置 Key',
+            no_model: '没有可用的探测模型',
+            already_running: '探测进行中',
+            disabled: '提供商已停用',
+          }
+          useToastStore().addToast(
+            `${skipped.length} 个提供商未探测：${skipped
+              .map((item) => `${item.name}（${reasonText[item.reason] || item.reason || '失败'}）`)
+              .join('、')}`,
+            'warning',
+          )
+        } else {
+          useToastStore().addToast('额度探测完成，结果已更新', 'success')
+        }
+        return result
+      } finally {
+        this.keyProbing = false
+      }
+    },
+
     async start() {
       const api = bridge()
       if (!api?.start) {
@@ -194,6 +283,8 @@ export const useRelayStore = defineStore('relay', {
         apiKey: this.apiKey,
         clientKeys: plain(this.clientKeys),
         sticky: this.sticky,
+        defaultProviderId: this.defaultProviderId,
+        lan: { enabled: this.lanEnabled },
         cache: {
           enabled: this.cacheEnabled,
           ttlMs: this.cacheTtlMinutes * 60000,
@@ -268,6 +359,37 @@ export const useRelayStore = defineStore('relay', {
       await this.persist()
     },
 
+    // 默认上游：模型未命中时回退到它；只写 defaultProviderId，不碰任何凭据。
+    // 传空字符串＝取消默认（恢复「未命中即 404」）。
+    async setDefaultProvider(id) {
+      const next = typeof id === 'string' ? id : ''
+      if (next && !this.providers.some((item) => item.id === next)) return
+      this.defaultProviderId = next
+      await this.persist()
+      const name = this.defaultProviderName
+      useToastStore().addToast(
+        name ? `已将「${name}」设为默认上游` : '已取消默认上游（模型未命中即 404）',
+        'success',
+      )
+    },
+
+    // 局域网访问：默认关闭。开启前必须已有访问 Key，否则拒绝（与主进程同口径）；
+    // 监听地址和端口一样不能热切换，运行中改动需重启中转站才生效。
+    async setLanEnabled(enabled) {
+      const next = Boolean(enabled)
+      if (next && !this.apiKey && this.clientKeys.length === 0) {
+        useToastStore().addToast('开启局域网访问前请先生成访问 Key 或添加客户端 Key', 'warning')
+        return
+      }
+      this.lanEnabled = next
+      await this.persist()
+      if (this.running) {
+        useToastStore().addToast('局域网设置已保存，需停止并重新启动中转站后生效', 'info')
+      } else {
+        useToastStore().addToast(next ? '已开启局域网访问' : '已关闭局域网访问', 'info')
+      }
+    },
+
     // 多客户端 Key：每个工具一把，日志里能看到是谁在调用
     async addClientKey(label) {
       const name = (label || '').trim() || `客户端${this.clientKeys.length + 1}`
@@ -314,6 +436,7 @@ export const useRelayStore = defineStore('relay', {
         strategy: payload.strategy || (payload.presetId === 'duanyan' ? 'duanyan' : ''),
         queueTimeoutMs: Number(payload.queueTimeoutMs) > 0 ? Number(payload.queueTimeoutMs) : 0,
         quota: normalizeQuota(payload.quota),
+        autoProbe: normalizeAutoProbe(payload.autoProbe),
         presetId: payload.presetId,
         createdAt: new Date().toISOString(),
       }
@@ -330,6 +453,7 @@ export const useRelayStore = defineStore('relay', {
       // apiKey 始终跟随第一个 Key，旧读法（provider.apiKey）仍然有效
       if (Array.isArray(patch.apiKeys)) next.apiKey = normalizeApiKeys(patch)[0] || ''
       if (patch.quota) next.quota = normalizeQuota(patch.quota)
+      if (patch.autoProbe) next.autoProbe = normalizeAutoProbe(patch.autoProbe)
       this.providers[index] = next
       await this.persist()
     },
@@ -379,6 +503,45 @@ export const useRelayStore = defineStore('relay', {
       if (result?.ok) this.logs = []
     },
 
+    // 运行诊断日志：启动/停止、配置变更、额度锁定、上游异常等事件
+    async loadDiagnostics({ skipWhenHidden = false } = {}) {
+      if (skipWhenHidden && typeof document !== 'undefined' && document.hidden) return
+      const api = bridge()
+      if (!api?.diagnostics) return
+      this.diagnosticsLoading = true
+      try {
+        const result = await api.diagnostics()
+        if (result?.ok) this.diagnostics = result.diagnostics || []
+      } catch {
+        // 轮询失败保留上一次数据，下个周期重试；避免未处理 rejection 刷屏
+      } finally {
+        this.diagnosticsLoading = false
+      }
+    },
+
+    async clearDiagnostics() {
+      const api = bridge()
+      if (!api?.clearDiagnostics) return
+      const result = await api.clearDiagnostics()
+      if (result?.ok) this.diagnostics = []
+    },
+
+    // 长期提供商观察：按 提供商 + 模型 + 日期 聚合，保留 180 天
+    async loadObservations({ skipWhenHidden = false } = {}) {
+      if (skipWhenHidden && typeof document !== 'undefined' && document.hidden) return
+      const api = bridge()
+      if (!api?.observations) return
+      this.observationsLoading = true
+      try {
+        const result = await api.observations()
+        if (result?.ok) this.observations = result.observations || []
+      } catch {
+        // 轮询失败保留上一次数据，下个周期重试；避免未处理 rejection 刷屏
+      } finally {
+        this.observationsLoading = false
+      }
+    },
+
     // 调用监控：按提供商 + 模型聚合的调用统计
     async loadStats() {
       const api = bridge()
@@ -426,11 +589,12 @@ export const useRelayStore = defineStore('relay', {
       return result.models || []
     },
 
-    // 单把 Key 测通：直接透传主进程结果（ok / error / ms / models）
-    async testKey(baseUrl, apiKey) {
+    // 单把 Key 测通：直接透传主进程结果（ok / error / ms / models）；
+    // model 非空时主进程改为对该模型发一次最小对话请求
+    async testKey(baseUrl, apiKey, model = '') {
       const api = bridge()
       if (!api?.testKey) return { ok: false, error: '当前环境不支持测通' }
-      return api.testKey({ baseUrl, apiKey })
+      return api.testKey({ baseUrl, apiKey, model })
     },
 
     // 从上游拉取模型列表，省得手抄模型名

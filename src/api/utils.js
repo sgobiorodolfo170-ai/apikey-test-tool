@@ -25,6 +25,15 @@ export function buildUrl(baseUrl, path) {
   return baseUrl + path
 }
 
+// 空 Key 时省略鉴权头：本地中转（未设访问 Key）/ 免鉴权网关场景，
+// 避免 “Authorization: Bearer ” 这类空令牌被严格服务端拒绝。
+// style='anthropic' 时使用 x-api-key 头。
+export function authHeaders(apiKey, style = 'bearer') {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : ''
+  if (!key) return {}
+  return style === 'anthropic' ? { 'x-api-key': key } : { Authorization: `Bearer ${key}` }
+}
+
 export function isAbortError(error) {
   return (
     error?.name === 'CanceledError' ||
